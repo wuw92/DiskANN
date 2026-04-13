@@ -107,6 +107,10 @@ struct IngestArgs {
     #[arg(long)]
     no_header_with_dim: Option<usize>,
 
+    /// Quantizer
+    #[arg(long)]
+    quantizer: Option<Quantizer>,
+
     /// Paths to base vectors
     base_path: PathBuf,
 }
@@ -159,6 +163,27 @@ struct QueryArgs {
 enum DataType {
     Uint8,
     Float32,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Quantizer {
+    None,
+    Bin,
+    Sq8,
+}
+
+impl ToRedisArgs for Quantizer {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + redis::RedisWrite,
+    {
+        let q = match self {
+            Quantizer::None => b"NOQUANT".as_slice(),
+            Quantizer::Bin => b"BIN".as_slice(),
+            Quantizer::Sq8 => b"SQ8".as_slice(),
+        };
+        out.write_arg(q);
+    }
 }
 
 struct VectorId(u32);
@@ -362,6 +387,7 @@ async fn ingest<T: Element>(
         let degree = args.degree;
         let mut cred = cred.clone();
         let data_type = opts.data_type;
+        let quantizer = args.quantizer;
 
         tasks.spawn(async move {
             let mut buf = vec![T::zeroed(); ds.batch_size() * ds.dim()];
@@ -387,6 +413,7 @@ async fn ingest<T: Element>(
                         let element = VectorId((first_id + i) as u32);
                         let buf_start = i * ds.dim();
                         let buf_end = buf_start + ds.dim();
+
                         pipeline.cmd("VADD").arg(&vset);
 
                         match data_type {
@@ -407,11 +434,13 @@ async fn ingest<T: Element>(
                                 pipeline.arg(b"XPREQ8");
                             }
                             DataType::Float32 => {
-                                pipeline.arg(b"NOQUANT");
+                                pipeline.arg(quantizer);
                             }
                         }
 
                         pipeline
+                            .arg(b"XDISTANCE_METRIC")
+                            .arg(b"COSINE")
                             .arg(b"EF")
                             .arg(l_build.to_string().as_bytes())
                             .arg(b"M")

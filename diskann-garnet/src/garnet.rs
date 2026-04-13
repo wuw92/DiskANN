@@ -3,7 +3,7 @@
  * Licensed under the MIT license.
  */
 
-use std::{ffi::c_void, fmt, mem, ops::Deref, slice};
+use std::{ffi::c_void, fmt, mem, ops::Deref, slice, sync::Mutex};
 
 use diskann::provider::ExecutionContext;
 use thiserror::Error;
@@ -42,6 +42,8 @@ pub type ReadModifyWriteCallback =
     unsafe extern "C" fn(u64, *const u8, usize, usize, RmwDataCallback, *mut c_void) -> bool;
 pub type ReadDataCallback = unsafe extern "C" fn(u32, *mut c_void, *const u8, usize);
 pub type RmwDataCallback = unsafe extern "C" fn(*mut c_void, *mut u8, usize);
+
+static MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Copy, Clone)]
 pub struct Callbacks {
@@ -86,6 +88,10 @@ impl Callbacks {
         self.rmw_callback
     }
 
+    #[expect(
+        dead_code,
+        reason = "currently unused, but may be needed in the future"
+    )]
     pub fn exists_iid(&self, ctx: Context, id: u32) -> bool {
         let key = [4, id];
         // SAFETY: Key bytes are preceded by 4 bytes of space.
@@ -100,6 +106,10 @@ impl Callbacks {
         unsafe { self.exists_raw(ctx, &key_bytes[4..]) }
     }
 
+    #[expect(
+        dead_code,
+        reason = "currently unused, but may be needed in the future"
+    )]
     pub fn exists_eid(&self, ctx: Context, id: &GarnetId) -> bool {
         // SAFETY: GarnetId ensures there are 4 bytes preceding the key bytes.
         unsafe { self.exists_raw(ctx, id) }
@@ -110,6 +120,8 @@ impl Callbacks {
     /// NOTE: The key bytes must be preceded by 4 valid bytes that Garnet can write into.
     /// This invariant must be checked by the caller.
     unsafe fn exists_raw(&self, ctx: Context, key: &[u8]) -> bool {
+        let _guard = MUTEX.lock().unwrap();
+
         let mut called = false;
         let mut cb = |_, _: &[u8]| {
             called = true;
@@ -190,6 +202,8 @@ impl Callbacks {
     /// This invariant must be checked by the caller.
     #[must_use]
     unsafe fn read_single_raw(&self, ctx: Context, key: &[u8], value: &mut [u8]) -> bool {
+        let _guard = MUTEX.lock().unwrap();
+
         let mut found = false;
         let mut cb = |_, data: &[u8]| {
             found = true;
@@ -215,6 +229,8 @@ impl Callbacks {
     where
         F: FnMut(u32, &'a [T]),
     {
+        let _guard = MUTEX.lock().unwrap();
+
         if ids.is_empty() {
             return;
         }
@@ -304,6 +320,8 @@ impl Callbacks {
     /// This invariant must be checked by the caller.
     #[must_use]
     unsafe fn write_raw(&self, ctx: Context, key: &[u8], value: &[u8]) -> bool {
+        let _guard = MUTEX.lock().unwrap();
+
         let value_ptr = value.as_ptr();
         let value_len = value.len();
         unsafe { (self.write_callback)(ctx.0, key.as_ptr(), key.len(), value_ptr, value_len) }
@@ -393,6 +411,7 @@ impl Callbacks {
     where
         F: FnMut(&'a mut [u8]),
     {
+        let _guard = MUTEX.lock().unwrap();
         unsafe {
             (self.rmw_callback)(
                 ctx.0,
