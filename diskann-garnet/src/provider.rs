@@ -23,16 +23,21 @@ use diskann::{
     utils::VectorRepr,
 };
 use diskann_providers::model::graph::provider::async_::common::FullPrecision;
+use diskann_quantization::alloc::{AllocatorError, Poly};
 use diskann_utils::Reborrow;
 use diskann_utils::object_pool::{AsPooled, ObjectPool, PooledRef, Undef};
 use diskann_vector::{PreprocessedDistanceFunction, contains::ContainsSimd, distance::Metric};
 use std::{
-    future, mem,
+    future,
+    marker::PhantomData,
+    mem,
     ops::{Deref, DerefMut},
 };
 use thiserror::Error;
 
 use crate::{
+    VectorQuantType,
+    alloc::AlignToEight,
     fsm::{FreeSpaceMap, FsmError},
     garnet::{Callbacks, Context, GarnetError, GarnetId, Term},
 };
@@ -64,6 +69,42 @@ impl AsPooled<Undef> for AdjList {
     }
 }
 
+pub struct FullVector<T: VectorRepr> {
+    inner: Poly<[u8], AlignToEight>,
+    ty: PhantomData<T>,
+}
+
+impl<T: VectorRepr> FullVector<T> {
+    fn new(inner: Poly<[u8], AlignToEight>) -> Self {
+        Self {
+            inner,
+            ty: PhantomData,
+        }
+    }
+}
+
+impl<T: VectorRepr> Deref for FullVector<T> {
+    type Target = Poly<[u8], AlignToEight>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T: VectorRepr> DerefMut for FullVector<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl<'a, T: VectorRepr> Reborrow<'a> for FullVector<T> {
+    type Target = &'a [T];
+
+    fn reborrow(&'a self) -> Self::Target {
+        bytemuck::cast_slice::<u8, T>(&self.inner)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum GarnetProviderError {
     #[error("Garnet operation failed")]
@@ -72,6 +113,8 @@ pub enum GarnetProviderError {
     Fsm(#[from] FsmError),
     #[error("Start point invalid")]
     StartPoint,
+    #[error("Allocation failed")]
+    AllocFailed(#[from] AllocatorError),
 }
 
 impl From<GarnetProviderError> for ANNError {
@@ -85,6 +128,7 @@ diskann::always_escalate!(GarnetProviderError);
 
 pub struct GarnetProvider<T: VectorRepr> {
     dim: usize,
+    quant_type: VectorQuantType,
     metric_type: Metric,
     max_degree: usize,
     callbacks: Callbacks,
@@ -98,6 +142,7 @@ pub struct GarnetProvider<T: VectorRepr> {
 impl<T: VectorRepr> GarnetProvider<T> {
     pub fn new(
         dim: usize,
+        quant_type: VectorQuantType,
         metric_type: Metric,
         max_degree: usize,
         callbacks: Callbacks,
@@ -136,6 +181,7 @@ impl<T: VectorRepr> GarnetProvider<T> {
 
         Ok(Self {
             dim,
+            quant_type,
             metric_type,
             max_degree,
             callbacks,
@@ -521,7 +567,7 @@ impl<T: VectorRepr> ExpandBeam<&[T]> for FullAccessor<'_, T> {
 
 impl<T: VectorRepr> Accessor for FullAccessor<'_, T> {
     type Element<'a>
-        = Vec<T>
+        = FullVector<T>
     where
         Self: 'a;
     type ElementRef<'a> = &'a [T];
@@ -531,7 +577,11 @@ impl<T: VectorRepr> Accessor for FullAccessor<'_, T> {
         &mut self,
         id: Self::Id,
     ) -> impl Future<Output = Result<Self::Element<'_>, Self::GetError>> + Send {
-        let mut v = vec![T::default(); self.provider.dim];
+        let mut v =
+            match Poly::broadcast(0u8, self.provider.dim * mem::size_of::<T>(), AlignToEight) {
+                Ok(v) => FullVector::new(v),
+                Err(e) => return future::ready(Err(GarnetProviderError::AllocFailed(e))),
+            };
 
         if id == 0 {
             let guard = if let Some(r) = self.provider.start_point_cache.get(&id) {
@@ -539,7 +589,7 @@ impl<T: VectorRepr> Accessor for FullAccessor<'_, T> {
             } else {
                 return future::ready(Err(GarnetError::Read.into()));
             };
-            v.copy_from_slice(&guard);
+            bytemuck::cast_slice_mut::<u8, T>(&mut v).copy_from_slice(&guard);
             return future::ready(Ok(v));
         }
 
