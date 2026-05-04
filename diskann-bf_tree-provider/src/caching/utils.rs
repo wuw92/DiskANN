@@ -296,7 +296,7 @@ mod tests {
 
     use diskann_quantization::num::PowerOfTwo;
 
-    use crate::model::graph::provider::async_::caching::provider::NeighborCache;
+    use super::super::provider::NeighborCache;
 
     // Hit Stats
     #[test]
@@ -416,12 +416,10 @@ mod tests {
                 "attempt to access via raw `id` should fail because keys are tagged"
             );
 
-            assert!(
-                cache
-                    .get_into(CacheKey { id, tag }, &mut cacher, &mut a)
-                    .unwrap()
-                    .into_inner()
-            );
+            assert!(cache
+                .get_into(CacheKey { id, tag }, &mut cacher, &mut a)
+                .unwrap()
+                .into_inner());
             assert_eq!(&*a, &[1, 2, 3]);
         }
 

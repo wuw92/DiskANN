@@ -1,0 +1,51 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+[package]
+name = "diskann-bf_tree-provider"
+version.workspace = true
+description.workspace = true
+authors.workspace = true
+documentation.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+bf-tree.workspace = true
+bytemuck = { workspace = true, features = ["must_cast"] }
+diskann.workspace = true
+diskann-providers.workspace = true
+diskann-quantization.workspace = true
+diskann-utils.workspace = true
+diskann-vector.workspace = true
+half = { workspace = true, features = ["bytemuck", "num-traits"] }
+futures-util.workspace = true
+polonius-the-crab = "0.5.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+
+[dev-dependencies]
+criterion.workspace = true
+diskann = { workspace = true, features = ["testing"] }
+diskann-providers = { workspace = true, features = ["testing"] }
+diskann-utils = { workspace = true, features = ["testing"] }
+iai-callgrind.workspace = true
+rstest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }
+
+[features]
+default = []
+experimental_diversity_search = ["diskann/experimental_diversity_search"]
+
+[[bench]]
+name = "bench_main"
+harness = false
+
+[[bench]]
+name = "bench_main_iai"
+harness = false
+
+[lints]
+workspace = true

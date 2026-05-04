@@ -16,14 +16,14 @@ use serde::{Deserialize, Serialize};
 
 use bf_tree::{BfTree, Config};
 use diskann::{
-    ANNError, ANNResult, default_post_processor,
+    default_post_processor,
     graph::{
-        AdjacencyList, DiskANNIndex, SearchOutputBuffer,
         glue::{
             self, Batch, DefaultPostProcessor, ExpandBeam, InplaceDeleteStrategy, InsertStrategy,
             MultiInsertStrategy, PruneStrategy, SearchExt, SearchStrategy,
         },
         workingset::{self, map},
+        AdjacencyList, DiskANNIndex, SearchOutputBuffer,
     },
     neighbor::Neighbor,
     provider::{
@@ -32,27 +32,29 @@ use diskann::{
         NoopGuard, SetElement,
     },
     utils::{IntoUsize, VectorRepr},
+    ANNError, ANNResult,
 };
 use diskann_utils::{future::AsyncFriendly, views::MatrixView};
-use diskann_vector::{DistanceFunction, distance::Metric};
+use diskann_vector::{distance::Metric, DistanceFunction};
 
-use crate::model::{
+use super::{
+    neighbor_provider::NeighborProvider, quant_vector_provider::QuantVectorProvider,
+    vector_provider::VectorProvider,
+};
+use diskann_providers::model::{
     graph::provider::async_::{
-        TableDeleteProviderAsync,
-        bf_tree::{
-            neighbor_provider::NeighborProvider, quant_vector_provider::QuantVectorProvider,
-            vector_provider::VectorProvider,
-        },
         common::{CreateDeleteProvider, FullPrecision, Hybrid, NoDeletes, NoStore, Panics},
         distances,
-        postprocess::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy},
+        TableDeleteProviderAsync,
     },
     pq::{self, FixedChunkPQTable, NUM_PQ_CENTROIDS},
 };
 
-use crate::storage::{LoadWith, PQStorage, SaveWith};
+use diskann::graph::glue::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy};
 
-use crate::storage::{StorageReadProvider, StorageWriteProvider};
+use diskann_providers::storage::{LoadWith, PQStorage, SaveWith};
+
+use diskann_providers::storage::{StorageReadProvider, StorageWriteProvider};
 
 /////////////////////
 // BfTreeProvider //
@@ -115,12 +117,10 @@ use crate::storage::{StorageReadProvider, StorageWriteProvider};
 /// This example demonstrates how to create a `BfTreeProvider` that only supports
 /// full-precision vectors.
 /// ```
-/// use diskann_providers::model::graph::provider::async_::{
-///     bf_tree::{
-///         BfTreeProvider, BfTreeProviderParameters
-///     },
-///     common::{NoStore, NoDeletes},
+/// use diskann_bf_tree_provider::provider::{
+///     BfTreeProvider, BfTreeProviderParameters
 /// };
+/// use diskann_providers::model::graph::provider::async_::common::{NoStore, NoDeletes};
 /// use diskann_vector::distance::Metric;
 /// use bf_tree::Config;
 /// use std::num::NonZeroUsize;
@@ -152,15 +152,11 @@ use crate::storage::{StorageReadProvider, StorageWriteProvider};
 /// [`FixedChunkPQTable`] can be supplied for the `quant_precursor` argument, as this
 /// implements the [`CreateQuantProvider`] trait.
 /// ```
-/// use diskann_providers::model::{
-///     pq::FixedChunkPQTable,
-///     graph::provider::async_::{
-///         bf_tree::{
-///             BfTreeProvider, BfTreeProviderParameters
-///     },
-///     common::NoDeletes,
-///     },
+/// use diskann_providers::model::pq::FixedChunkPQTable;
+/// use diskann_bf_tree_provider::provider::{
+///     BfTreeProvider, BfTreeProviderParameters
 /// };
+/// use diskann_providers::model::graph::provider::async_::common::NoDeletes;
 /// use diskann_vector::distance::Metric;
 /// use bf_tree::Config;
 /// use std::num::NonZeroUsize;
@@ -200,15 +196,11 @@ use crate::storage::{StorageReadProvider, StorageWriteProvider};
 /// If deletes are desired, than the type [`TableBasedDeletes`] can be passed to the
 /// constructor.
 /// ```
-/// use diskann_providers::model::{
-///     pq::FixedChunkPQTable,
-///     graph::provider::async_::{
-///     bf_tree::{
-///         BfTreeProvider, BfTreeProviderParameters
-///     },
-///     common::TableBasedDeletes,
-///     },
+/// use diskann_providers::model::pq::FixedChunkPQTable;
+/// use diskann_bf_tree_provider::provider::{
+///     BfTreeProvider, BfTreeProviderParameters
 /// };
+/// use diskann_providers::model::graph::provider::async_::common::TableBasedDeletes;
 /// use diskann_vector::distance::Metric;
 /// use bf_tree::Config;
 /// use std::num::NonZeroUsize;
@@ -1988,7 +1980,8 @@ where
         // Save delete bitmap
         {
             let filename = BfTreePaths::delete_bin(&saved_params.prefix);
-            let bitmap_bytes = self.deleted.to_bytes();
+            let bitmap_bytes =
+                super::delete_bitmap_serde::delete_bitmap_to_bytes(&self.deleted);
             let mut writer = storage.create_for_write(&filename)?;
             writer.write_all(&bitmap_bytes)?;
         }
@@ -2050,7 +2043,7 @@ where
             let mut reader = storage.open_reader(&filename)?;
             let mut bitmap_bytes = Vec::new();
             reader.read_to_end(&mut bitmap_bytes)?;
-            TableDeleteProviderAsync::from_bytes(&bitmap_bytes, total_points)
+            super::delete_bitmap_serde::delete_bitmap_from_bytes(&bitmap_bytes, total_points)
                 .map_err(|e| ANNError::log_index_error(e))?
         } else {
             // If file doesn't exist, create a new empty delete provider
@@ -2166,7 +2159,8 @@ where
         // Save delete bitmap
         {
             let filename = BfTreePaths::delete_bin(&saved_params.prefix);
-            let bitmap_bytes = self.deleted.to_bytes();
+            let bitmap_bytes =
+                super::delete_bitmap_serde::delete_bitmap_to_bytes(&self.deleted);
             let mut writer = storage.create_for_write(&filename)?;
             writer.write_all(&bitmap_bytes)?;
         }
@@ -2252,7 +2246,7 @@ where
             let mut reader = storage.open_reader(&filename)?;
             let mut bitmap_bytes = Vec::new();
             reader.read_to_end(&mut bitmap_bytes)?;
-            TableDeleteProviderAsync::from_bytes(&bitmap_bytes, total_points)
+            super::delete_bitmap_serde::delete_bitmap_from_bytes(&bitmap_bytes, total_points)
                 .map_err(|e| ANNError::log_index_error(e))?
         } else {
             // If file doesn't exist, create a new empty delete provider
@@ -2286,8 +2280,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::graph::provider::async_::common::TableBasedDeletes;
-    use crate::storage::file_storage_provider::FileStorageProvider;
+    use diskann_providers::model::graph::provider::async_::common::TableBasedDeletes;
+    use diskann_providers::storage::FileStorageProvider;
 
     #[tokio::test]
     async fn test_data_provider_and_delete_interface() {
@@ -2384,12 +2378,10 @@ mod tests {
 
         // out-of-bound set-element fails.
         //
-        assert!(
-            provider
-                .set_element(ctx, &100, &[1.0, 2.0, 3.0, 4.0])
-                .await
-                .is_err()
-        );
+        assert!(provider
+            .set_element(ctx, &100, &[1.0, 2.0, 3.0, 4.0])
+            .await
+            .is_err());
     }
 
     /// This functionality test targets scenarios of empty neighbor lists and ensures:
@@ -2465,12 +2457,10 @@ mod tests {
         let mut out = AdjacencyList::from_iter_untrusted([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]); // len = 10
 
         // Attempt to access non-existant vector's neighbor list should fail as NotFound
-        assert!(
-            neighbor_accessor
-                .get_neighbors(200, &mut out)
-                .await
-                .is_err()
-        );
+        assert!(neighbor_accessor
+            .get_neighbors(200, &mut out)
+            .await
+            .is_err());
         assert!(out.is_empty());
     }
 

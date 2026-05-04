@@ -10,13 +10,13 @@ use std::marker::PhantomData;
 use bf_tree::{BfTree, Config};
 use bytemuck::{bytes_of, cast_slice};
 use diskann::{
-    ANNError, ANNErrorKind, ANNResult,
     utils::{ErrorToVectorId, TryIntoVectorId, VectorId, VectorRepr},
+    ANNError, ANNErrorKind, ANNResult,
 };
 use thiserror::Error;
 
-use super::super::common::TestCallCount;
 use super::ConfigError;
+use diskann_providers::model::graph::provider::async_::common::TestCallCount;
 
 pub struct VectorProvider<T: VectorRepr, I: VectorId = u32> {
     dim: usize,
@@ -241,7 +241,9 @@ mod tests {
                 .unwrap();
             assert_eq!(&vector, &vec![(i as f32), (i + 1) as f32, (i + 2) as f32]);
         }
-        assert_eq!(vector_provider.num_get_calls.get(), num_points);
+        if TestCallCount::enabled() {
+            assert_eq!(vector_provider.num_get_calls.get(), num_points);
+        }
     }
 
     /// Test other methods and edge cases of the vector provider and sycrhnoization mechanism of Bf-Tree

@@ -56,20 +56,18 @@
 //!   by the inner [`Accessor`] and is customized for a cache accessor.
 //! * The traits [`Evict`] and [`AsCacheAccessorFor`] are implemented by the **cache**.
 
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, future::Future, sync::Arc};
 
 use futures_util::FutureExt;
 
 use diskann::{
-    ANNResult,
     error::{self as core_error, IntoANNResult, StandardError},
     graph::{
-        AdjacencyList, SearchOutputBuffer,
         glue::{
             self, Batch, ExpandBeam, InplaceDeleteStrategy, InsertStrategy, MultiInsertStrategy,
             Pipeline, PruneStrategy, SearchExt, SearchPostProcessStep, SearchStrategy,
         },
-        workingset,
+        workingset, AdjacencyList, SearchOutputBuffer,
     },
     neighbor::Neighbor,
     provider::{
@@ -77,10 +75,11 @@ use diskann::{
         DataProvider, DelegateNeighbor, Delete, ElementStatus, HasId, NeighborAccessor,
         NeighborAccessorMut, SetElement,
     },
+    ANNResult,
 };
 use diskann_utils::{
-    WithLifetime,
     future::{AssertSend, AsyncFriendly, SendFuture},
+    WithLifetime,
 };
 use thiserror::Error;
 
@@ -973,7 +972,10 @@ where
             Accessor: NeighborCache<DP::InternalId>,
             Error = E,
         > + AsyncFriendly,
-    for<'a> S::PruneAccessor<'a>: CachedFill<<C as AsCacheAccessorFor<'a, PruneAccessor<'a, S, DP>>>::Accessor, S::WorkingSet>,
+    for<'a> S::PruneAccessor<'a>: CachedFill<
+        <C as AsCacheAccessorFor<'a, PruneAccessor<'a, S, DP>>>::Accessor,
+        S::WorkingSet,
+    >,
     E: StandardError,
 {
     type WorkingSet = Cached<S::WorkingSet>;
@@ -1036,13 +1038,13 @@ where
     for<'a> S::DeleteSearchAccessor<'a>: CacheableAccessor,
     Cached<S::PruneStrategy>: PruneStrategy<CachingProvider<DP, C>>,
     for<'a> Cached<S::SearchStrategy>: SearchStrategy<
-            CachingProvider<DP, C>,
-            S::DeleteElement<'a>,
-            SearchAccessor<'a> = CachingAccessor<
-                S::DeleteSearchAccessor<'a>,
-                <C as AsCacheAccessorFor<'a, S::DeleteSearchAccessor<'a>>>::Accessor,
-            >,
+        CachingProvider<DP, C>,
+        S::DeleteElement<'a>,
+        SearchAccessor<'a> = CachingAccessor<
+            S::DeleteSearchAccessor<'a>,
+            <C as AsCacheAccessorFor<'a, S::DeleteSearchAccessor<'a>>>::Accessor,
         >,
+    >,
     C: for<'a> AsCacheAccessorFor<
             'a,
             S::DeleteSearchAccessor<'a>,
@@ -1099,13 +1101,10 @@ where
     B: Batch,
     S: MultiInsertStrategy<DP, B>,
     Cached<S::InsertStrategy>: for<'a> InsertStrategy<
-            CachingProvider<DP, C>,
-            B::Element<'a>,
-            PruneStrategy: PruneStrategy<
-                CachingProvider<DP, C>,
-                WorkingSet = Cached<S::WorkingSet>,
-            >,
-        >,
+        CachingProvider<DP, C>,
+        B::Element<'a>,
+        PruneStrategy: PruneStrategy<CachingProvider<DP, C>, WorkingSet = Cached<S::WorkingSet>>,
+    >,
     C: AsyncFriendly,
 {
     type Seed = Cached<S::Seed>;
@@ -1146,14 +1145,14 @@ mod tests {
     use std::{
         fmt::Display,
         sync::{
-            Arc,
             atomic::{AtomicUsize, Ordering},
+            Arc,
         },
     };
 
     use diskann::{
-        ANNError,
         error::{RankedError, ToRanked, TransientError},
+        ANNError,
     };
 
     #[derive(Debug, Default)]

@@ -12,7 +12,7 @@ use diskann_utils::future::AsyncFriendly;
 use diskann_vector::distance::Metric;
 
 use crate::{
-    model::graph::provider::async_::{TableDeleteProviderAsync, postprocess},
+    model::graph::provider::async_::TableDeleteProviderAsync,
     storage::{AsyncIndexMetadata, AsyncQuantLoadContext, LoadWith, SaveWith},
 };
 
@@ -350,7 +350,7 @@ impl<T> SetElementHelper<T> for NoStore {
 #[derive(Debug, Clone, Copy)]
 pub struct NoDeletes;
 
-impl postprocess::DeletionCheck for NoDeletes {
+impl diskann::graph::glue::DeletionCheck for NoDeletes {
     /// Always mark IDs as not deleted.
     ///
     /// We rely on constant propagation and dead-code elimination to optimize call-sites

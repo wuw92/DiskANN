@@ -729,6 +729,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "diskann-bf_tree-provider"
+version = "0.50.1"
+dependencies = [
+ "bf-tree",
+ "bytemuck",
+ "criterion",
+ "diskann",
+ "diskann-providers",
+ "diskann-quantization",
+ "diskann-utils",
+ "diskann-vector",
+ "futures-util",
+ "half",
+ "iai-callgrind",
+ "polonius-the-crab",
+ "rstest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
 name = "diskann-disk"
 version = "0.51.0"
 dependencies = [
@@ -835,7 +859,6 @@ version = "0.51.0"
 dependencies = [
  "approx",
  "arc-swap",
- "bf-tree",
  "bincode",
  "bytemuck",
  "byteorder",
@@ -854,7 +877,6 @@ dependencies = [
  "itertools 0.13.0",
  "num-traits",
  "opentelemetry",
- "polonius-the-crab",
  "proptest",
  "prost",
  "rand 0.9.4",
@@ -862,7 +884,6 @@ dependencies = [
  "rayon",
  "rstest",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",

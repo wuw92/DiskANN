@@ -277,10 +277,10 @@ mod tests {
     use diskann_vector::{PureDistanceFunction, distance::SquaredL2};
     use rstest::rstest;
 
-    use crate::{
+    use diskann_providers::{
         index::diskann_async::tests as async_tests,
-        model::graph::provider::async_::caching::provider::{AsCacheAccessorFor, CachingProvider},
     };
+    use super::provider::{AsCacheAccessorFor, CachingProvider};
 
     fn test_provider(
         uncacheable: Option<Vec<u32>>,
@@ -730,13 +730,13 @@ mod tests {
 
         // Test with the zero query.
         let query = vec![0.0; dim];
-        let gt = crate::test_utils::groundtruth(corpus.as_view(), &query, |a, b| {
+        let gt = diskann_providers::test_utils::groundtruth(corpus.as_view(), &query, |a, b| {
             SquaredL2::evaluate(a, b)
         });
         paged_tests.push(async_tests::PagedSearch::new(query, gt));
 
         // Test with the start point to ensure it is filtered out.
-        let gt = crate::test_utils::groundtruth(corpus.as_view(), &start_point, |a, b| {
+        let gt = diskann_providers::test_utils::groundtruth(corpus.as_view(), &start_point, |a, b| {
             SquaredL2::evaluate(a, b)
         });
         paged_tests.push(async_tests::PagedSearch::new(start_point.clone(), gt));

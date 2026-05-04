@@ -43,10 +43,10 @@ use crate::{
         },
         distances::UnwrapErr,
         inmem::{DefaultProvider, FullPrecisionProvider, FullPrecisionStore},
-        postprocess::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy},
     },
     utils::{Bridge, BridgeErr},
 };
+use diskann::graph::glue::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy};
 
 /////////////////////
 // Error Promotion //

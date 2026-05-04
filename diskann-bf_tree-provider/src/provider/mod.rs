@@ -3,13 +3,14 @@
  * Licensed under the MIT license.
  */
 
+mod bf_tree_provider;
+mod delete_bitmap_serde;
 mod neighbor_provider;
-mod provider;
 mod quant_vector_provider;
 mod vector_provider;
 
 // Accessors
-pub use provider::{
+pub use bf_tree_provider::{
     AsVectorDtype, BfTreePaths, BfTreeProvider, BfTreeProviderParameters, CreateQuantProvider,
     FullAccessor, GraphParams, Hidden, Index, QuantAccessor, QuantIndex, StartPoint, VectorDtype,
 };

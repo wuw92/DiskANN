@@ -9,17 +9,17 @@ use std::sync::Arc;
 
 use bf_tree::{BfTree, Config};
 use bytemuck::bytes_of;
-use diskann::{ANNError, ANNErrorKind, ANNResult, error::IntoANNResult, utils::VectorRepr};
+use diskann::{error::IntoANNResult, utils::VectorRepr, ANNError, ANNErrorKind, ANNResult};
 use diskann_quantization::CompressInto;
 use diskann_utils::object_pool::ObjectPool;
 use diskann_vector::distance::Metric;
 use thiserror::Error;
 
-use super::super::common::TestCallCount;
 use super::ConfigError;
-use crate::{
+use diskann_providers::model::graph::provider::async_::common::TestCallCount;
+use diskann_providers::{
     model::{
-        distance::common::distance_table_pool,
+        pq::distance::common::distance_table_pool,
         pq::{self, FixedChunkPQTable},
     },
     utils::BridgeErr,
@@ -261,7 +261,7 @@ impl QuantVectorProvider {
 #[cfg(test)]
 mod tests {
     use diskann::ANNErrorKind;
-    use diskann_vector::{DistanceFunction, PreprocessedDistanceFunction, distance::Metric};
+    use diskann_vector::{distance::Metric, DistanceFunction, PreprocessedDistanceFunction};
     use tokio::task::JoinSet;
 
     use super::*;

@@ -45,10 +45,10 @@ use crate::{
             TestCallCount, VectorStore,
         },
         inmem::{FullPrecisionProvider, FullPrecisionStore},
-        postprocess::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy},
     },
     storage::{self, AsyncIndexMetadata, AsyncQuantLoadContext, LoadWith, SaveWith},
 };
+use diskann::graph::glue::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy};
 
 type CVRef<'a, const NBITS: usize> = CompensatedVectorRef<'a, NBITS>;
 

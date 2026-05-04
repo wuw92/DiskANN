@@ -10,14 +10,14 @@ use std::marker::PhantomData;
 use bf_tree::{BfTree, Config};
 use bytemuck::{bytes_of, cast_slice, cast_slice_mut};
 use diskann::{
-    ANNError, ANNResult,
     graph::AdjacencyList,
     provider::HasId,
     utils::{IntoUsize, TryIntoVectorId, VectorId},
+    ANNError, ANNResult,
 };
 
-use super::super::common::TestCallCount;
 use super::ConfigError;
+use diskann_providers::model::graph::provider::async_::common::TestCallCount;
 
 pub struct NeighborProvider<I: VectorId> {
     adjacency_list_index: BfTree,

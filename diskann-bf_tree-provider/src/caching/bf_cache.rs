@@ -11,7 +11,7 @@ use diskann_quantization::num::PowerOfTwo;
 use diskann_utils::future::AsyncFriendly;
 use thiserror::Error;
 
-use super::super::bf_tree::ConfigError;
+use crate::provider::ConfigError;
 
 /// A cache capable of holding values with a configurable maximum capacity.
 pub struct Cache {
@@ -919,12 +919,10 @@ mod tests {
             assert_eq!(v, expected);
 
             let mut u = 0u32;
-            assert!(
-                cache
-                    .get_into(k, &mut cacher_u32, &mut u)
-                    .unwrap()
-                    .into_inner()
-            );
+            assert!(cache
+                .get_into(k, &mut cacher_u32, &mut u)
+                .unwrap()
+                .into_inner());
             assert_eq!(u, expected);
 
             cache.get_into_raw(k, &mut cacher_u32, &mut u).unwrap();
