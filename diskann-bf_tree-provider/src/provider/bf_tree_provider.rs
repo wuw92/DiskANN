@@ -44,8 +44,7 @@ use super::{
 use diskann_providers::model::{
     graph::provider::async_::{
         common::{CreateDeleteProvider, FullPrecision, Hybrid, NoDeletes, NoStore, Panics},
-        distances,
-        TableDeleteProviderAsync,
+        distances, TableDeleteProviderAsync,
     },
     pq::{self, FixedChunkPQTable, NUM_PQ_CENTROIDS},
 };
@@ -1980,8 +1979,7 @@ where
         // Save delete bitmap
         {
             let filename = BfTreePaths::delete_bin(&saved_params.prefix);
-            let bitmap_bytes =
-                super::delete_bitmap_serde::delete_bitmap_to_bytes(&self.deleted);
+            let bitmap_bytes = super::delete_bitmap_serde::delete_bitmap_to_bytes(&self.deleted);
             let mut writer = storage.create_for_write(&filename)?;
             writer.write_all(&bitmap_bytes)?;
         }
@@ -2159,8 +2157,7 @@ where
         // Save delete bitmap
         {
             let filename = BfTreePaths::delete_bin(&saved_params.prefix);
-            let bitmap_bytes =
-                super::delete_bitmap_serde::delete_bitmap_to_bytes(&self.deleted);
+            let bitmap_bytes = super::delete_bitmap_serde::delete_bitmap_to_bytes(&self.deleted);
             let mut writer = storage.create_for_write(&filename)?;
             writer.write_all(&bitmap_bytes)?;
         }

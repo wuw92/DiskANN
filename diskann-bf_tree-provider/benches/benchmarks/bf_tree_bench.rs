@@ -7,7 +7,7 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use bf_tree::Config;
 use criterion::Criterion;
 use diskann::{
-    graph::{self, DiskANNIndex, search::Knn, search_output_buffer},
+    graph::{self, search::Knn, search_output_buffer, DiskANNIndex},
     provider::DefaultContext,
 };
 use diskann_bf_tree_provider::provider::{BfTreeProvider, BfTreeProviderParameters};
@@ -15,7 +15,7 @@ use diskann_providers::{
     index::diskann_async,
     model::graph::provider::async_::common::{FullPrecision, NoDeletes},
     storage::{FileStorageProvider, StorageReadProvider},
-    utils::{VectorDataIterator, create_thread_pool_for_bench},
+    utils::{create_thread_pool_for_bench, VectorDataIterator},
 };
 use diskann_utils::{io::read_bin, views::MatrixView};
 use diskann_vector::distance::Metric;
@@ -75,9 +75,7 @@ async fn bf_tree_build_sift_256() -> (Arc<DiskANNIndex<BfTreeProvider<f32>>>, Ve
 
     let train_data = read_bin::<f32>(
         &mut storage_provider
-            .open_reader(
-                get_test_file_path("test_data/sift/siftsmall_learn_256pts.fbin").as_str(),
-            )
+            .open_reader(get_test_file_path("test_data/sift/siftsmall_learn_256pts.fbin").as_str())
             .unwrap(),
     )
     .unwrap();

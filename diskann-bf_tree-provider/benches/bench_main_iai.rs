@@ -4,7 +4,7 @@
  */
 
 use benchmarks_iai::bf_tree_iai::{bf_tree_insert_bench_iai, bf_tree_search_bench_iai};
-use iai_callgrind::{EventKind, LibraryBenchmarkConfig, RegressionConfig, main};
+use iai_callgrind::{main, EventKind, LibraryBenchmarkConfig, RegressionConfig};
 mod benchmarks_iai;
 
 main!(
