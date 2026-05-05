@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "diskann-bf_tree-provider"
-version = "0.50.1"
+version = "0.51.0"
 dependencies = [
  "bf-tree",
  "bytemuck",
