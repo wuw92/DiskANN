@@ -4,3 +4,6 @@
  */
 
 pub mod bftree_store;
+
+#[cfg(feature = "rocksdb")]
+pub mod rocksdb_store;
