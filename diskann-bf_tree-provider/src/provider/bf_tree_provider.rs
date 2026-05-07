@@ -12,6 +12,10 @@ use std::{
     sync::Arc,
 };
 
+use diskann_quantization::{
+    alloc::{GlobalAllocator, Poly},
+    spherical::iface::{try_deserialize, Quantizer},
+};
 use serde::{Deserialize, Serialize};
 
 use bf_tree::{BfTree, Config};
@@ -38,20 +42,18 @@ use diskann_utils::{future::AsyncFriendly, views::MatrixView};
 use diskann_vector::{distance::Metric, DistanceFunction};
 
 use super::{
-    neighbor_provider::NeighborProvider, quant_vector_provider::QuantVectorProvider,
+    hybrid_computer::{HybridComputer, QuantQueryComputer},
+    neighbor_provider::NeighborProvider,
+    quant_vector_provider::QuantVectorProvider,
     vector_provider::VectorProvider,
 };
-use diskann_providers::model::{
-    graph::provider::async_::{
-        common::{CreateDeleteProvider, FullPrecision, Hybrid, NoDeletes, NoStore, Panics},
-        distances, TableDeleteProviderAsync,
-    },
-    pq::{self, FixedChunkPQTable, NUM_PQ_CENTROIDS},
+use diskann::graph::glue::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy};
+use diskann_providers::model::graph::provider::async_::{
+    common::{CreateDeleteProvider, FullPrecision, Hybrid, NoDeletes, NoStore, Panics},
+    distances, TableDeleteProviderAsync,
 };
 
-use diskann::graph::glue::{AsDeletionCheck, DeletionCheck, RemoveDeletedIdsAndCopy};
-
-use diskann_providers::storage::{LoadWith, PQStorage, SaveWith};
+use diskann_providers::storage::{LoadWith, SaveWith};
 
 use diskann_providers::storage::{StorageReadProvider, StorageWriteProvider};
 
@@ -534,7 +536,7 @@ impl CreateQuantProvider for NoStore {
 
 /// Allow a `FixedChunkPQTable` to be promoted to full quant vector store.
 ///
-impl CreateQuantProvider for FixedChunkPQTable {
+impl CreateQuantProvider for Poly<dyn Quantizer> {
     type Target = QuantVectorProvider;
     fn create(
         self,
@@ -1107,7 +1109,7 @@ where
     pub(crate) fn new(provider: &'a BfTreeProvider<T, QuantVectorProvider, D>) -> Self {
         Self {
             provider,
-            element: (0..provider.quant_vectors.pq_chunks())
+            element: (0..provider.quant_vectors.quantizer.bytes())
                 .map(|_| u8::default())
                 .collect(),
         }
@@ -1194,7 +1196,7 @@ where
     D: AsyncFriendly,
 {
     type QueryComputerError = ANNError;
-    type QueryComputer = pq::distance::QueryComputer<Arc<FixedChunkPQTable>>;
+    type QueryComputer = QuantQueryComputer;
 
     fn build_query_computer(
         &self,
@@ -1318,15 +1320,16 @@ where
     D: AsyncFriendly,
 {
     type DistanceComputerError = ANNError;
-    type DistanceComputer = distances::pq::HybridComputer<T>;
+    type DistanceComputer = HybridComputer<T>;
 
     fn build_distance_computer(
         &self,
     ) -> Result<Self::DistanceComputer, Self::DistanceComputerError> {
         let metric = self.provider.quant_vectors.metric();
-        Ok(distances::pq::HybridComputer::new(
-            self.provider.quant_vectors.distance_computer(),
+        Ok(HybridComputer::new(
+            self.provider.quant_vectors.distance_computer()?,
             T::distance(metric, Some(self.provider.full_vectors.dim())),
+            self.provider.quant_vectors.quantizer.clone(),
         ))
     }
 }
@@ -1443,7 +1446,7 @@ where
         &self,
         accessor: &mut QuantAccessor<'a, T, D>,
         query: &[T],
-        _computer: &pq::distance::QueryComputer<Arc<FixedChunkPQTable>>,
+        _computer: &QuantQueryComputer,
         candidates: I,
         output: &mut B,
     ) -> impl Future<Output = Result<usize, Self::Error>> + Send
@@ -1485,7 +1488,7 @@ where
     T: VectorRepr,
     D: AsyncFriendly + DeletionCheck,
 {
-    type QueryComputer = pq::distance::QueryComputer<Arc<FixedChunkPQTable>>;
+    type QueryComputer = QuantQueryComputer;
     type SearchAccessor<'a> = QuantAccessor<'a, T, D>;
     type SearchAccessorError = Panics;
 
@@ -1539,7 +1542,7 @@ where
     D: AsyncFriendly,
 {
     type WorkingSet = distances::pq::HybridMap<T, u8>;
-    type DistanceComputer<'a> = distances::pq::HybridComputer<T>;
+    type DistanceComputer<'a> = HybridComputer<T>;
     type PruneAccessor<'a> = HybridAccessor<'a, T, D>;
     type PruneAccessorError = diskann::error::Infallible;
 
@@ -1750,7 +1753,6 @@ impl BfTreeParams {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct QuantParams {
-    pub num_pq_bytes: usize,
     pub max_fp_vecs_per_fill: usize,
     pub params_quant: BfTreeParams,
 }
@@ -1854,9 +1856,9 @@ impl BfTreePaths {
         format!("{}_delete.bin", prefix)
     }
 
-    /// Returns the path for the PQ pivots file
-    pub fn pq_pivots_bin(prefix: &str) -> String {
-        format!("{}_pq_pivots.bin", prefix)
+    /// Returns the path for the spherical quantizer data file
+    pub fn quant_data_bin(prefix: &str) -> String {
+        format!("{}_quant_data.bin", prefix)
     }
 }
 
@@ -2090,7 +2092,6 @@ where
                 leaf_page_size: self.neighbor_provider.config().get_leaf_page_size(),
             },
             quant_params: Some(QuantParams {
-                num_pq_bytes: self.quant_vectors.pq_chunks(),
                 max_fp_vecs_per_fill: self.max_fp_vecs_per_fill,
                 params_quant: BfTreeParams {
                     bytes: self.quant_vectors.config().get_cb_size_byte(),
@@ -2142,17 +2143,14 @@ where
         .await?;
 
         // Save PQ table metadata and data using PQStorage format
-        let filename = BfTreePaths::pq_pivots_bin(&saved_params.prefix);
-        let pq_storage = PQStorage::new(&filename, "", None);
-        let pq_table = &self.quant_vectors.pq_chunk_table;
-        pq_storage.write_pivot_data(
-            pq_table.get_pq_table(),
-            pq_table.get_centroids(),
-            pq_table.get_chunk_offsets(),
-            NUM_PQ_CENTROIDS,
-            pq_table.get_dim(),
-            storage,
-        )?;
+        let filename = BfTreePaths::quant_data_bin(&saved_params.prefix);
+        let serialized = self
+            .quant_vectors
+            .quantizer
+            .serialize(GlobalAllocator)
+            .map_err(|e| ANNError::log_index_error(format!("{e}")))?;
+        let mut writer = storage.create_for_write(&filename)?;
+        writer.write_all(&serialized)?;
 
         // Save delete bitmap
         {
@@ -2217,10 +2215,13 @@ where
             NeighborProvider::<u32>::new_from_bftree(saved_params.max_degree, adjacency_list_index);
 
         // Read PQ table from file using PQStorage format
-        let filename = BfTreePaths::pq_pivots_bin(&saved_params.prefix);
-        let pq_storage = PQStorage::new(&filename, "", None);
-        let pq_table =
-            pq_storage.load_pq_pivots_bin(&filename, quant_params.num_pq_bytes, storage)?;
+        let filename = BfTreePaths::quant_data_bin(&saved_params.prefix);
+
+        let mut reader = storage.open_reader(&filename)?;
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        let quantizer: Poly<dyn Quantizer> = try_deserialize(&bytes, GlobalAllocator)
+            .map_err(|e| ANNError::log_index_error(format!("{e}")))?;
 
         let quant_vector_index = load_bftree(
             &quant_params.params_quant,
@@ -2231,7 +2232,7 @@ where
             metric,
             saved_params.max_points,
             saved_params.frozen_points.get(),
-            pq_table.clone(),
+            quantizer,
             quant_vector_index,
         );
 

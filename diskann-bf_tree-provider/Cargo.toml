@@ -14,7 +14,7 @@ bf-tree.workspace = true
 bytemuck = { workspace = true, features = ["must_cast"] }
 diskann.workspace = true
 diskann-providers.workspace = true
-diskann-quantization.workspace = true
+diskann-quantization = { workspace = true, features = ["flatbuffers"] }
 diskann-utils.workspace = true
 diskann-vector.workspace = true
 half = { workspace = true, features = ["bytemuck", "num-traits"] }

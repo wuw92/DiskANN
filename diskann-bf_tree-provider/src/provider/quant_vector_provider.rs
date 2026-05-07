@@ -10,54 +10,43 @@ use std::sync::Arc;
 use bf_tree::{BfTree, Config};
 use bytemuck::bytes_of;
 use diskann::{error::IntoANNResult, utils::VectorRepr, ANNError, ANNErrorKind, ANNResult};
-use diskann_quantization::CompressInto;
-use diskann_utils::object_pool::ObjectPool;
+use diskann_quantization::{
+    alloc::{GlobalAllocator, Poly, ScopedAllocator},
+    spherical::iface::{DistanceComputer, OpaqueMut, Quantizer, QueryLayout},
+};
 use diskann_vector::distance::Metric;
 use thiserror::Error;
 
+use super::hybrid_computer::QuantQueryComputer;
 use super::ConfigError;
 use diskann_providers::model::graph::provider::async_::common::TestCallCount;
-use diskann_providers::{
-    model::{
-        pq::distance::common::distance_table_pool,
-        pq::{self, FixedChunkPQTable},
-    },
-    utils::BridgeErr,
-};
 
 pub struct QuantVectorProvider {
     quant_vector_index: BfTree,
     max_vectors: usize,
     num_start_points: usize,
-    pub pq_chunk_table: Arc<FixedChunkPQTable>,
+    pub quantizer: Arc<Poly<dyn Quantizer>>,
     metric: Metric,
     pub(super) num_get_calls: TestCallCount,
-
-    vec_pool: Arc<ObjectPool<Vec<f32>>>,
 }
-
-type DistanceComputer = pq::distance::DistanceComputer<Arc<FixedChunkPQTable>>;
-type QueryComputer = pq::distance::QueryComputer<Arc<FixedChunkPQTable>>;
 
 impl QuantVectorProvider {
     pub fn new_with_config(
         dist_metric: Metric,
         max_vectors: usize,
         num_start_points: usize,
-        pq_chunk_table: FixedChunkPQTable,
+        quantizer: Poly<dyn Quantizer>,
         config: Config,
     ) -> ANNResult<Self> {
         let quant_vector_index = BfTree::with_config(config, None).map_err(ConfigError)?;
-        let vec_pool = Arc::new(distance_table_pool(&pq_chunk_table));
 
         Ok(Self {
             max_vectors,
             num_start_points,
             quant_vector_index,
-            pq_chunk_table: Arc::new(pq_chunk_table),
+            quantizer: Arc::new(quantizer),
             metric: dist_metric,
             num_get_calls: TestCallCount::default(),
-            vec_pool,
         })
     }
 
@@ -82,18 +71,16 @@ impl QuantVectorProvider {
         dist_metric: Metric,
         max_vectors: usize,
         num_start_points: usize,
-        pq_chunk_table: FixedChunkPQTable,
+        quantizer: Poly<dyn Quantizer>,
         quant_vector_index: BfTree,
     ) -> Self {
-        let vec_pool = Arc::new(distance_table_pool(&pq_chunk_table));
         Self {
             max_vectors,
             num_start_points,
             quant_vector_index,
-            pq_chunk_table: Arc::new(pq_chunk_table),
+            quantizer: Arc::new(quantizer),
             metric: dist_metric,
             num_get_calls: TestCallCount::default(),
-            vec_pool,
         }
     }
 
@@ -105,30 +92,33 @@ impl QuantVectorProvider {
 
     /// Return the dimension of the full-precision data associated with this provider
     pub fn full_dim(&self) -> usize {
-        self.pq_chunk_table.get_dim()
-    }
-
-    /// Return the number of PQ chunks in the underlying PQ schema
-    pub fn pq_chunks(&self) -> usize {
-        self.pq_chunk_table.get_num_chunks()
+        self.quantizer.full_dim()
     }
 
     /// Create a query computer for the provided query vector
-    pub fn query_computer<T>(&self, query: &[T]) -> ANNResult<QueryComputer>
+    pub fn query_computer<T>(&self, query: &[T]) -> ANNResult<QuantQueryComputer>
     where
         T: Copy + VectorRepr,
     {
-        QueryComputer::new(
-            self.pq_chunk_table.clone(),
-            self.metric,
-            &T::as_f32(query).into_ann_result()?,
-            Some(self.vec_pool.clone()),
-        )
+        let query_f32 = T::as_f32(query).into_ann_result()?;
+        let inner = self
+            .quantizer
+            .fused_query_computer(
+                &query_f32,
+                QueryLayout::FullPrecision,
+                true,
+                GlobalAllocator,
+                ScopedAllocator::global(),
+            )
+            .map_err(|e| ANNError::log_sq_error(e))?;
+        Ok(QuantQueryComputer(inner))
     }
 
     /// Create a distance computer for the underlying schema
-    pub fn distance_computer(&self) -> DistanceComputer {
-        DistanceComputer::new(self.pq_chunk_table.clone(), self.metric)
+    pub fn distance_computer(&self) -> ANNResult<DistanceComputer> {
+        self.quantizer
+            .distance_computer(GlobalAllocator)
+            .map_err(|e| ANNError::log_sq_error(e))
     }
 
     pub(crate) fn get_vector_into(&self, i: usize, buffer: &mut [u8]) -> ANNResult<()> {
@@ -179,7 +169,7 @@ impl QuantVectorProvider {
 
     /// Return the quant vector at index `i`.
     pub(crate) fn get_vector_sync(&self, i: usize) -> ANNResult<Vec<u8>> {
-        let mut value = vec![0u8; self.pq_chunks()];
+        let mut value = vec![0u8; self.quantizer.bytes()];
         self.get_vector_into(i, &mut value)?;
         Ok(value)
     }
@@ -204,21 +194,23 @@ impl QuantVectorProvider {
         let vf32: &[f32] = &T::as_f32(v).into_ann_result()?;
 
         if vf32.len() != self.full_dim() {
-            return Err(ANNError::log_index_error(
-                "Vector f32 dimension is not equal to the expected dimension.",
-            ));
+            return Err(ANNError::log_dimension_mismatch_error(format!(
+                "Vector f32 dimension is not equal to the expected dimension."
+            )));
         }
 
         // Serialize the key into a byte string, &[u8]
         let key = bytes_of::<usize>(&i);
 
-        // Quantize the full vector and de-serialize it as byte string
-        let dim = self.pq_chunk_table.get_num_chunks();
+        let dim = self.quantizer.bytes();
         let quant_vector = &mut vec![0u8; dim];
-
-        self.pq_chunk_table
-            .compress_into(vf32, quant_vector)
-            .bridge_err()?;
+        self.quantizer
+            .compress(
+                vf32,
+                OpaqueMut::new(quant_vector),
+                ScopedAllocator::global(),
+            )
+            .map_err(|e| ANNError::log_sq_error(e))?;
 
         self.quant_vector_index.insert(key, quant_vector);
 

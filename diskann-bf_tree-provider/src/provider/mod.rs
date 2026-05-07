@@ -5,6 +5,7 @@
 
 mod bf_tree_provider;
 mod delete_bitmap_serde;
+mod hybrid_computer;
 mod neighbor_provider;
 mod quant_vector_provider;
 mod vector_provider;
