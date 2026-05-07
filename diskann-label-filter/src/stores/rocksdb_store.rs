@@ -9,7 +9,9 @@
 //! over either backend at compile time via the `KvStore` trait.
 
 use crate::traits::kv_store_traits::{KeyRange, KvIterator, KvStore, RangeBound};
-use rocksdb::{Direction, IteratorMode, Options, ReadOptions, WriteBatch, DB};
+use rocksdb::{
+    BlockBasedOptions, Cache, Direction, IteratorMode, Options, ReadOptions, WriteBatch, DB,
+};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -63,10 +65,30 @@ impl From<&str> for RocksdbStoreError {
 }
 
 impl RocksdbStore {
+    /// Default block cache size (32 MiB), matching `BfTreeStore::DEFAULT_CACHE_SIZE`.
+    pub const DEFAULT_CACHE_SIZE: usize = 32 * 1024 * 1024;
+
     /// Opens a RocksDB at `path` with sensible defaults (`create_if_missing = true`).
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, RocksdbStoreError> {
+        Self::open_with_cache_size(path, Self::DEFAULT_CACHE_SIZE)
+    }
+
+    /// Opens a RocksDB with a configured block cache size (the most common knob).
+    ///
+    /// Other RocksDB tunables (write buffer size, compression, parallelism) can
+    /// be set via [`open_with_options`] for full control.
+    pub fn open_with_cache_size<P: AsRef<Path>>(
+        path: P,
+        cache_size: usize,
+    ) -> Result<Self, RocksdbStoreError> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
+
+        let cache = Cache::new_lru_cache(cache_size);
+        let mut block_opts = BlockBasedOptions::default();
+        block_opts.set_block_cache(&cache);
+        opts.set_block_based_table_factory(&block_opts);
+
         Self::open_with_options(path, opts)
     }
 
@@ -333,5 +355,80 @@ mod tests {
                 Some(expected.into_bytes())
             );
         }
+    }
+
+    /// Open → write → drop → reopen → verify. Exercises RocksDB's persistence
+    /// guarantee, which `BfTreeStore` does not have a direct test for.
+    #[test]
+    fn test_persistence_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+
+        {
+            let store = RocksdbStore::open(&path).unwrap();
+            store.set(b"persist", b"yes").unwrap();
+            store
+                .batch_set(&[(b"k1".as_slice(), b"v1".as_slice()), (b"k2", b"v2")])
+                .unwrap();
+        }
+
+        let reopened = RocksdbStore::open(&path).unwrap();
+        assert_eq!(reopened.get(b"persist").unwrap(), Some(b"yes".to_vec()));
+        assert_eq!(reopened.get(b"k1").unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(reopened.get(b"k2").unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(reopened.get(b"missing").unwrap(), None);
+    }
+
+    /// End-to-end smoke test: drive the `GenericIndex` inverted-index machinery
+    /// over a `RocksdbStore` backend and run a real Eq query. This proves the
+    /// `KvStore` trait actually delivers backend swappability — the same code
+    /// path that runs over `BfTreeStore` runs unchanged here.
+    #[test]
+    fn test_generic_index_over_rocksdb() {
+        use crate::attribute::AttributeValue;
+        use crate::kv_index::GenericIndex;
+        use crate::parser::ast::{ASTExpr, CompareOp};
+        use crate::traits::inverted_index_trait::InvertedIndexProvider;
+        use crate::traits::key_codec::DefaultKeyCodec;
+        use crate::traits::posting_list_trait::{PostingList, RoaringPostingList};
+        use crate::traits::query_evaluator::QueryEvaluator;
+        use crate::utils::flatten_utils::Attributes;
+        use serde_json::json;
+
+        let (store, _dir) = RocksdbStore::temp().unwrap();
+        let mut index =
+            GenericIndex::<RocksdbStore, RoaringPostingList, DefaultKeyCodec>::new(Arc::new(store));
+
+        let mut red = Attributes::new();
+        red.insert(
+            "color".to_string(),
+            AttributeValue::try_from(&json!("red")).unwrap(),
+        );
+        index.insert(1, &red).unwrap();
+
+        let mut blue = Attributes::new();
+        blue.insert(
+            "color".to_string(),
+            AttributeValue::try_from(&json!("blue")).unwrap(),
+        );
+        index.insert(2, &blue).unwrap();
+
+        let mut red_again = Attributes::new();
+        red_again.insert(
+            "color".to_string(),
+            AttributeValue::try_from(&json!("red")).unwrap(),
+        );
+        index.insert(3, &red_again).unwrap();
+
+        let expr = ASTExpr::Compare {
+            field: "color".to_string(),
+            op: CompareOp::Eq(json!("red")),
+        };
+        let result = index.evaluate_query(&expr).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(1));
+        assert!(!result.contains(2));
+        assert!(result.contains(3));
     }
 }
