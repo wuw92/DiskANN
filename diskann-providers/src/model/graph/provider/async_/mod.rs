@@ -39,3 +39,7 @@ pub mod bf_tree;
 // Caching proxy provider to accelerate slow providers.
 #[cfg(feature = "bf_tree")]
 pub mod caching;
+
+// RocksDB based data provider for the async index (parallel to bf_tree).
+#[cfg(feature = "rocksdb_provider")]
+pub mod rocksdb;
