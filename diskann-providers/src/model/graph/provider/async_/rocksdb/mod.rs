@@ -98,10 +98,34 @@ impl Config {
     }
 }
 
+/// Default block cache size for graph-storage rocksdb instances (256 MiB).
+const BLOCK_CACHE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Default write buffer (memtable) size (64 MiB).
+const WRITE_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+
 /// Open a RocksDB at the path described by `config`.
+///
+/// The Options here are tuned for the graph-storage workload:
+/// vectors and neighbor lists are small (hundreds of bytes), reads are
+/// random and dominate during search, writes are bursty during build.
+///
+/// - Block cache 256 MiB so the working set of a moderately sized graph
+///   stays cached across queries (default is 8 MiB which is far too small).
+/// - Write buffer 64 MiB to absorb a build phase without frequent flushes.
+/// - Compression disabled — records are short and CPU-bound; Snappy on
+///   ~256 B records adds overhead with negligible space savings.
 pub(crate) fn open_db(config: &Config) -> Result<DB, ConfigError> {
     let mut opts = rocksdb::Options::default();
     opts.create_if_missing(true);
+    opts.set_compression_type(rocksdb::DBCompressionType::None);
+    opts.set_write_buffer_size(WRITE_BUFFER_BYTES);
+
+    let cache = rocksdb::Cache::new_lru_cache(BLOCK_CACHE_BYTES);
+    let mut block_opts = rocksdb::BlockBasedOptions::default();
+    block_opts.set_block_cache(&cache);
+    opts.set_block_based_table_factory(&block_opts);
+
     DB::open(&opts, &config.path).map_err(ConfigError)
 }
 

@@ -178,6 +178,12 @@ where
     type Output = BuildResult;
 
     fn try_match(&self, input: &IndexOperation) -> Result<MatchScore, FailureScore> {
+        // Reject jobs that explicitly request a non-inmem backend so the
+        // dispatcher routes them to FullPrecisionBfTree / FullPrecisionRocksdb.
+        if input.source.graph_provider() != crate::inputs::graph_index::GraphProviderKind::InMemory
+        {
+            return Err(FailureScore(0));
+        }
         let score = datatype::Type::<T>::try_match(input.source.data_type());
         if self.plugins.is_match(&input.search_phase) {
             score
@@ -215,6 +221,15 @@ where
                         self.plugins.format_kinds(),
                     )?;
                 }
+
+                let provider = arg.source.graph_provider();
+                if provider != crate::inputs::graph_index::GraphProviderKind::InMemory {
+                    writeln!(
+                        f,
+                        "Unsupported graph_provider: {} - expected inmem",
+                        provider
+                    )?;
+                }
                 Ok(())
             }
             None => {
@@ -223,6 +238,7 @@ where
                     "Data/Query Type: {}",
                     Description::<datatype::DataType, datatype::Type<T>>::new()
                 )?;
+                writeln!(f, "Graph Provider: inmem")?;
 
                 writeln!(f, "Search Kinds: {}", self.plugins.format_kinds())
             }

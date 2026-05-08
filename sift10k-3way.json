@@ -1,0 +1,89 @@
+{
+  "search_directories": ["test_data/sift"],
+  "jobs": [
+    {
+      "type": "graph-index-build",
+      "content": {
+        "source": {
+          "index-source": "Build",
+          "data_type": "float32",
+          "data": "siftsmall_learn.bin",
+          "distance": "squared_l2",
+          "max_degree": 32,
+          "l_build": 50,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 1,
+          "start_point_strategy": "medoid",
+          "graph_provider": "inmem"
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "siftsmall_query_100pts.bin",
+          "groundtruth": "siftsmall_gt100",
+          "reps": 3,
+          "num_threads": [1],
+          "runs": [
+            {"search_n": 20, "search_l": [20, 50, 100], "recall_k": 10}
+          ]
+        }
+      }
+    },
+    {
+      "type": "graph-index-build",
+      "content": {
+        "source": {
+          "index-source": "Build",
+          "data_type": "float32",
+          "data": "siftsmall_learn.bin",
+          "distance": "squared_l2",
+          "max_degree": 32,
+          "l_build": 50,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 1,
+          "start_point_strategy": "medoid",
+          "graph_provider": "bftree"
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "siftsmall_query_100pts.bin",
+          "groundtruth": "siftsmall_gt100",
+          "reps": 3,
+          "num_threads": [1],
+          "runs": [
+            {"search_n": 20, "search_l": [20, 50, 100], "recall_k": 10}
+          ]
+        }
+      }
+    },
+    {
+      "type": "graph-index-build",
+      "content": {
+        "source": {
+          "index-source": "Build",
+          "data_type": "float32",
+          "data": "siftsmall_learn.bin",
+          "distance": "squared_l2",
+          "max_degree": 32,
+          "l_build": 50,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 1,
+          "start_point_strategy": "medoid",
+          "graph_provider": "rocksdb"
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "siftsmall_query_100pts.bin",
+          "groundtruth": "siftsmall_gt100",
+          "reps": 3,
+          "num_threads": [1],
+          "runs": [
+            {"search_n": 20, "search_l": [20, 50, 100], "recall_k": 10}
+          ]
+        }
+      }
+    }
+  ]
+}

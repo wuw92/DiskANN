@@ -149,9 +149,10 @@ impl QuantVectorProvider {
         }
 
         self.num_get_calls.increment();
+        // Use `get_pinned` to skip the per-read `Vec<u8>` allocation.
         let value = self
             .quant_vector_index
-            .get(bytes_of(&i))
+            .get_pinned(bytes_of(&i))
             .map_err(|e| ANNError::log_index_error(format!("rocksdb get failed: {}", e)))?;
 
         let bytes = match value {

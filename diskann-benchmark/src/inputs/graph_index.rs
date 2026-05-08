@@ -29,6 +29,35 @@ use crate::{
     utils::SimilarityMeasure,
 };
 
+/// Selects which graph storage backend the benchmark dispatcher should route a
+/// job to. Defaults to `InMemory` so existing JSON configs keep matching the
+/// inmem benchmarks without modification.
+///
+/// Variants are present unconditionally so configs always parse the same way;
+/// each backend's `Benchmark::try_match` rejects any value other than its own
+/// variant, which gives us per-backend dispatch with a single shared input
+/// schema.
+#[derive(Default, Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraphProviderKind {
+    #[serde(rename = "inmem")]
+    #[default]
+    InMemory,
+    #[serde(rename = "bftree")]
+    BfTree,
+    #[serde(rename = "rocksdb")]
+    Rocksdb,
+}
+
+impl std::fmt::Display for GraphProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InMemory => write!(f, "inmem"),
+            Self::BfTree => write!(f, "bftree"),
+            Self::Rocksdb => write!(f, "rocksdb"),
+        }
+    }
+}
+
 //////////////
 // Registry //
 //////////////
@@ -573,6 +602,10 @@ pub(crate) struct IndexBuild {
     pub(crate) num_threads: usize,
     pub(crate) multi_insert: Option<MultiInsert>,
     pub(crate) save_path: Option<String>,
+    /// Graph storage backend to use. Defaults to `InMemory` for backward
+    /// compatibility with existing configs.
+    #[serde(default)]
+    pub(crate) graph_provider: GraphProviderKind,
 }
 
 impl IndexBuild {
@@ -753,6 +786,7 @@ impl Example for IndexBuild {
             insert_retry: None,
             start_point_strategy: StartPointStrategy::Medoid,
             save_path: None,
+            graph_provider: GraphProviderKind::default(),
         }
     }
 }
@@ -779,6 +813,18 @@ impl IndexSource {
         match self {
             IndexSource::Load(load) => &load.data_type,
             IndexSource::Build(build) => &build.data_type,
+        }
+    }
+
+    /// Returns the graph storage backend selected for this source.
+    ///
+    /// `IndexSource::Load` doesn't carry a backend hint today; for Phase A we
+    /// assume the inmem path (existing behavior) on the load side. Build jobs
+    /// honor the `IndexBuild::graph_provider` field.
+    pub(crate) fn graph_provider(&self) -> GraphProviderKind {
+        match self {
+            IndexSource::Load(_) => GraphProviderKind::InMemory,
+            IndexSource::Build(build) => build.graph_provider,
         }
     }
 }

@@ -83,9 +83,12 @@ impl<I: VectorId> NeighborProvider<I> {
         let i = vector_id.into_usize();
         let key = bytes_of::<usize>(&i);
 
+        // `get_pinned` returns a `DBPinnableSlice` (derefs to `&[u8]`) so we
+        // avoid allocating a `Vec<u8>` per neighbor lookup. This is the
+        // hottest path during graph search.
         let value = self
             .adjacency_list_index
-            .get(key)
+            .get_pinned(key)
             .map_err(|e| ANNError::log_index_error(format!("rocksdb get failed: {}", e)))?;
 
         let bytes = match value {

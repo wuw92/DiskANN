@@ -124,6 +124,10 @@ mod imp {
         type Output = BuildResult;
 
         fn try_match(&self, input: &IndexOperation) -> Result<MatchScore, FailureScore> {
+            use crate::inputs::graph_index::GraphProviderKind;
+            if input.source.graph_provider() != GraphProviderKind::BfTree {
+                return Err(FailureScore(0));
+            }
             let score = datatype::Type::<T>::try_match(input.source.data_type());
             if self.plugins.is_match(&input.search_phase) {
                 score

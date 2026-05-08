@@ -132,9 +132,12 @@ impl<T: VectorRepr, I: VectorId> VectorProvider<T, I> {
         }
 
         self.num_get_calls.increment();
+        // `get_pinned` returns a `DBPinnableSlice` that derefs to `&[u8]`
+        // without an intermediate `Vec<u8>` allocation. This is the hot
+        // path for graph search; avoiding the alloc per get is worth ~µs.
         let value = self
             .vector_index
-            .get(bytes_of(&i))
+            .get_pinned(bytes_of(&i))
             .map_err(|e| ANNError::log_index_error(format!("rocksdb get failed: {}", e)))?;
 
         let bytes = match value {
