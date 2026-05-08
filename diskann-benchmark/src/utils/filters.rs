@@ -10,8 +10,8 @@ use diskann::{graph::index::QueryLabelProvider, utils::VectorId};
 use diskann_benchmark_runner::files::InputFile;
 use diskann_label_filter::{
     kv_index::GenericIndex,
-    stores::bftree_store::BfTreeStore,
     traits::{
+        kv_store_traits::KvStore,
         posting_list_trait::{PostingList, RoaringPostingList},
         query_evaluator::QueryEvaluator,
     },
@@ -28,11 +28,16 @@ pub struct QueryBitmapEvaluator {
 }
 
 impl QueryBitmapEvaluator {
-    /// Create a new filter and evaluate the bitmap immediately (existing behavior).
-    pub fn new(
+    /// Create a new filter and evaluate the bitmap immediately. Generic over
+    /// the `KvStore` backend so callers can plug `BfTreeStore`, `RocksdbStore`,
+    /// or any future implementation without changing this entry point.
+    pub fn new<S>(
         ast_expr: ASTExpr,
-        inverted_index: &GenericIndex<BfTreeStore, RoaringPostingList, DefaultKeyCodec>,
-    ) -> Self {
+        inverted_index: &GenericIndex<S, RoaringPostingList, DefaultKeyCodec>,
+    ) -> Self
+    where
+        S: KvStore,
+    {
         let evaluated_bitmap = inverted_index.evaluate_query(&ast_expr).unwrap();
         Self {
             ast_expr,

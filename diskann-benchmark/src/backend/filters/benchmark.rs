@@ -233,43 +233,96 @@ pub fn prepare_bitmap_filters_from_paths_with_kind(
     let label_count = base_labels.len();
     let base_label_latency = timer.elapsed();
 
-    // Build inverted index (one-time cost)
-    let timer = std::time::Instant::now();
-
-    // Create the appropriate store backend based on the kind
-    let inverted_index = match kind {
+    // The inverted-index build, query parsing, and bitmap evaluation phases
+    // all touch the concrete backend store; we factor them inside each match
+    // arm because Rust requires a single concrete type for `inverted_index`.
+    // The output (`Vec<QueryBitmapEvaluator>` + 3 latencies) is backend-agnostic.
+    let (
+        bitmap_filters,
+        inverted_index_build_latency,
+        query_parsing_latency,
+        search_strategy_latency,
+    ) = match kind {
         InvertedIndexKind::BfTree => {
-            // Use BfTree-based persistent store
+            let timer = std::time::Instant::now();
             let store = Arc::new(BfTreeStore::memory().unwrap());
             let mut idx =
                 GenericIndex::<BfTreeStore, RoaringPostingList, DefaultKeyCodec>::new(store)
                     .with_field_normalizer(|field| format!("/{}", field.replace(".", "/")));
-            // Build the index
             for (doc_id, doc) in base_labels.iter().enumerate() {
                 idx.insert(doc_id, &doc.flatten_metadata())?;
             }
-            Arc::new(idx)
+            let inverted_index_build_latency = timer.elapsed();
+
+            let timer = std::time::Instant::now();
+            let parsed_queries = read_and_parse_queries(query_predicates)?;
+            let query_parsing_latency = timer.elapsed();
+
+            let timer = std::time::Instant::now();
+            let bitmap_filters: Vec<QueryBitmapEvaluator> = parsed_queries
+                .into_iter()
+                .map(|(_, query_predicate)| QueryBitmapEvaluator::new(query_predicate, &idx))
+                .collect();
+            let search_strategy_latency = timer.elapsed();
+
+            (
+                bitmap_filters,
+                inverted_index_build_latency,
+                query_parsing_latency,
+                search_strategy_latency,
+            )
+        }
+        #[cfg(feature = "rocksdb_provider")]
+        InvertedIndexKind::RocksDB => {
+            use diskann_label_filter::stores::rocksdb_store::RocksdbStore;
+
+            let timer = std::time::Instant::now();
+            // Hold the tempdir on the stack so the rocksdb directory survives
+            // the index build + query evaluation.
+            let temp_dir = tempfile::tempdir()
+                .map_err(|e| anyhow::anyhow!("failed to create rocksdb tempdir: {}", e))?;
+            let store = Arc::new(
+                RocksdbStore::open(temp_dir.path())
+                    .map_err(|e| anyhow::anyhow!("rocksdb open failed: {}", e))?,
+            );
+            let mut idx =
+                GenericIndex::<RocksdbStore, RoaringPostingList, DefaultKeyCodec>::new(store)
+                    .with_field_normalizer(|field| format!("/{}", field.replace(".", "/")));
+            for (doc_id, doc) in base_labels.iter().enumerate() {
+                idx.insert(doc_id, &doc.flatten_metadata())?;
+            }
+            let inverted_index_build_latency = timer.elapsed();
+
+            let timer = std::time::Instant::now();
+            let parsed_queries = read_and_parse_queries(query_predicates)?;
+            let query_parsing_latency = timer.elapsed();
+
+            let timer = std::time::Instant::now();
+            let bitmap_filters: Vec<QueryBitmapEvaluator> = parsed_queries
+                .into_iter()
+                .map(|(_, query_predicate)| QueryBitmapEvaluator::new(query_predicate, &idx))
+                .collect();
+            let search_strategy_latency = timer.elapsed();
+
+            // `idx` and `store` get dropped here; `temp_dir` follows.
+            drop(idx);
+            drop(temp_dir);
+
+            (
+                bitmap_filters,
+                inverted_index_build_latency,
+                query_parsing_latency,
+                search_strategy_latency,
+            )
+        }
+        #[cfg(not(feature = "rocksdb_provider"))]
+        InvertedIndexKind::RocksDB => {
+            return Err(anyhow::anyhow!(
+                "InvertedIndexKind::RocksDB requires building diskann-benchmark with \
+                 the `rocksdb_provider` feature enabled",
+            ));
         }
     };
-
-    let inverted_index_build_latency = timer.elapsed();
-
-    let timer = std::time::Instant::now();
-    // Parse queries and evaluate against the index
-    let parsed_queries = read_and_parse_queries(query_predicates)?;
-
-    let query_parsing_latency = timer.elapsed();
-
-    let timer = std::time::Instant::now();
-
-    let bitmap_filters: Vec<QueryBitmapEvaluator> = parsed_queries
-        .into_iter()
-        .map(|(_, query_predicate)| {
-            QueryBitmapEvaluator::new(query_predicate, inverted_index.as_ref())
-        })
-        .collect();
-
-    let search_strategy_latency = timer.elapsed();
 
     let filter_search_results = FilterSearchResults {
         base_label_latencies: base_label_latency.into(),

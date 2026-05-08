@@ -38,6 +38,7 @@ opentelemetry_sdk = { workspace = true, optional = true }
 scopeguard = { version = "1.2", optional = true }
 diskann-benchmark-core = { workspace = true, features = ["bigann"] }
 itertools.workspace = true
+tempfile = { workspace = true, optional = true }
 
 [lints]
 clippy.undocumented_unsafe_blocks = "warn"
@@ -72,4 +73,15 @@ disk-index = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
     "dep:scopeguard",
+]
+
+# Enable BfTreeProvider as a graph storage backend in benchmarks.
+bf_tree_provider = ["diskann-providers/bf_tree"]
+
+# Enable RocksdbProvider as a graph storage backend in benchmarks.
+# Also turns on the rocksdb-backed inverted-index (KvStore) backend.
+rocksdb_provider = [
+    "diskann-providers/rocksdb_provider",
+    "diskann-label-filter/rocksdb",
+    "dep:tempfile",
 ]

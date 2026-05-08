@@ -639,6 +639,56 @@ impl IndexBuild {
         }
     }
 
+    /// Build a `BfTreeProviderParameters` with default in-memory bf-tree configs
+    /// for the vector / neighbor / quant stores (mirrors `inmem_parameters`).
+    #[cfg(feature = "bf_tree_provider")]
+    pub(crate) fn bftree_parameters(
+        &self,
+        num_points: usize,
+        dim: usize,
+    ) -> diskann_providers::model::graph::provider::async_::bf_tree::BfTreeProviderParameters {
+        use diskann_providers::model::graph::provider::async_::bf_tree::{
+            BfTreeProviderParameters, Config,
+        };
+        BfTreeProviderParameters {
+            max_points: num_points,
+            num_start_points: NonZero::new(self.start_point_strategy.count()).unwrap(),
+            dim,
+            metric: self.distance.into(),
+            max_fp_vecs_per_fill: None,
+            max_degree: self.exact_max_degree() as u32,
+            vector_provider_config: Config::default(),
+            quant_vector_provider_config: Config::default(),
+            neighbor_list_provider_config: Config::default(),
+            graph_params: None,
+        }
+    }
+
+    /// Build a `RocksdbProviderParameters` with default in-memory rocksdb configs
+    /// (a tempdir per provider, mirroring the bf-tree memory mode).
+    #[cfg(feature = "rocksdb_provider")]
+    pub(crate) fn rocksdb_parameters(
+        &self,
+        num_points: usize,
+        dim: usize,
+    ) -> diskann_providers::model::graph::provider::async_::rocksdb::RocksdbProviderParameters {
+        use diskann_providers::model::graph::provider::async_::rocksdb::{
+            Config, RocksdbProviderParameters,
+        };
+        RocksdbProviderParameters {
+            max_points: num_points,
+            num_start_points: NonZero::new(self.start_point_strategy.count()).unwrap(),
+            dim,
+            metric: self.distance.into(),
+            max_fp_vecs_per_fill: None,
+            max_degree: self.exact_max_degree() as u32,
+            vector_provider_config: Config::default(),
+            quant_vector_provider_config: Config::default(),
+            neighbor_list_provider_config: Config::default(),
+            graph_params: None,
+        }
+    }
+
     fn summarize_fields(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write_field!(f, "file", self.data.display())?;
         write_field!(f, "data_type", self.data_type)?;

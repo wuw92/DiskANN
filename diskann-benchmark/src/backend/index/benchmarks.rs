@@ -113,6 +113,8 @@ pub(super) fn register_benchmarks(benchmarks: &mut diskann_benchmark_runner::reg
     product::register_benchmarks(benchmarks);
     scalar::register_benchmarks(benchmarks);
     spherical::register_benchmarks(benchmarks);
+    super::bf_tree::register_benchmarks(benchmarks);
+    super::rocksdb::register_benchmarks(benchmarks);
 }
 
 type FullPrecisionProvider<T> = inmem::DefaultProvider<

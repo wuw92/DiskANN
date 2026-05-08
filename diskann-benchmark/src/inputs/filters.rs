@@ -30,12 +30,18 @@ pub(crate) enum InvertedIndexKind {
     #[serde(rename = "bftree")]
     #[default]
     BfTree,
+    /// RocksDB-backed inverted index. Available when the
+    /// `rocksdb_provider` feature is enabled; selecting this variant
+    /// without the feature returns a clear runtime error.
+    #[serde(rename = "rocksdb")]
+    RocksDB,
 }
 
 impl std::fmt::Display for InvertedIndexKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InvertedIndexKind::BfTree => write!(f, "bftree"),
+            InvertedIndexKind::RocksDB => write!(f, "rocksdb"),
         }
     }
 }

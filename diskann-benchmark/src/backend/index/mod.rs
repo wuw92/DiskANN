@@ -15,6 +15,10 @@ mod product;
 mod scalar;
 mod spherical;
 
+// KV-backed graph storage backends (parallel to inmem).
+mod bf_tree;
+mod rocksdb;
+
 pub(crate) fn register_benchmarks(benchmarks: &mut diskann_benchmark_runner::registry::Benchmarks) {
     benchmarks::register_benchmarks(benchmarks)
 }
