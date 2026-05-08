@@ -16,6 +16,7 @@ use rocksdb::DB;
 use thiserror::Error;
 
 use super::super::common::TestCallCount;
+use super::super::kv_codec::vector as vector_codec;
 use super::{Config, open_db};
 
 pub struct VectorProvider<T: VectorRepr, I: VectorId = u32> {
@@ -106,16 +107,7 @@ impl<T: VectorRepr, I: VectorId> VectorProvider<T, I> {
     /// * `v.len() != self.dim()`: wrong dimension.
     #[inline(always)]
     pub(crate) fn set_vector_sync(&self, i: usize, v: &[T]) -> ANNResult<()> {
-        if v.len() != self.dim {
-            return Err(ANNError::log_index_error(
-                "Vector dimension is not equal to the expected dimension.",
-            ));
-        }
-        if i >= self.total() {
-            return Err(ANNError::log_index_error(
-                "Vector id is out of boundary in the dataset.",
-            ));
-        }
+        vector_codec::validate_set(i, self.total(), v.len(), self.dim)?;
 
         let key = bytes_of::<usize>(&i);
         let value = cast_slice::<T, u8>(v);
@@ -155,15 +147,8 @@ impl<T: VectorRepr, I: VectorId> VectorProvider<T, I> {
             }
         };
 
-        let vector_size = std::mem::size_of::<T>() * self.dim;
-        if bytes.len() != vector_size {
-            return Err(ANNError::log_index_error(format!(
-                "The rocksdb entry for vector id {} has size {} instead of the expected size {}",
-                i,
-                bytes.len(),
-                vector_size,
-            )));
-        }
+        let expected = std::mem::size_of::<T>() * self.dim;
+        vector_codec::validate_read_size("rocksdb", i, bytes.len(), expected)?;
         bytemuck::must_cast_slice_mut::<_, u8>(buffer).copy_from_slice(&bytes);
 
         Ok(())

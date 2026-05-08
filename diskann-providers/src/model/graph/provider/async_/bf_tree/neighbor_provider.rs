@@ -13,10 +13,11 @@ use diskann::{
     ANNError, ANNResult,
     graph::AdjacencyList,
     provider::HasId,
-    utils::{IntoUsize, TryIntoVectorId, VectorId},
+    utils::{IntoUsize, VectorId},
 };
 
 use super::super::common::TestCallCount;
+use super::super::kv_codec::neighbor as neighbor_codec;
 use super::ConfigError;
 
 pub struct NeighborProvider<I: VectorId> {
@@ -89,42 +90,9 @@ impl<I: VectorId> NeighborProvider<I> {
         let value = cast_slice_mut::<I, u8>(&mut guard);
         match self.adjacency_list_index.read(key, value) {
             bf_tree::LeafReadResult::Found(read_size) => {
-                // If found, then re-construct the neighbor list (valid neighbors only)
-                if read_size > 0 {
-                    // A non-empty neighbor list should at least contain one entry for the list length
-                    if (read_size as usize) < std::mem::size_of::<I>() {
-                        return Err(ANNError::log_index_error(
-                            "Retrieved neighbor list is shorter than a single VectorID",
-                        ));
-                    }
-
-                    // A retrieved neighbor list should not be longer than the max degree
-                    if (read_size as usize) > (std::mem::size_of::<I>() * self.dim) {
-                        return Err(ANNError::log_index_error(
-                            "Retrieved neighbor list is longer than the max degree",
-                        ));
-                    }
-
-                    // Retrieved data length must be in the multiple of VectorID
-                    if !(read_size as usize).is_multiple_of(std::mem::size_of::<I>()) {
-                        return Err(ANNError::log_index_error(
-                            "Retrieved neighbor list length is not in the multiple of VectorID",
-                        ));
-                    }
-
-                    // The last entry in the retrieved data is neighbor length
-                    let nbr_count =
-                        guard[(read_size as usize) / std::mem::size_of::<I>() - 1].into_usize();
-
-                    // The specified list length must be smaller than the retrieved data length
-                    if (read_size as usize) < (std::mem::size_of::<I>() * (nbr_count + 1)) {
-                        return Err(ANNError::log_index_error(
-                            "The length of the retrieved neighbor list is shorter than the specified length",
-                        ));
-                    }
-
-                    guard.finish(nbr_count);
-                }
+                let nbr_count =
+                    neighbor_codec::validate_and_count::<I>(read_size as usize, self.dim, &guard)?;
+                guard.finish(nbr_count);
             }
             bf_tree::LeafReadResult::Deleted => {
                 return Err(ANNError::log_index_error(
@@ -153,7 +121,6 @@ impl<I: VectorId> NeighborProvider<I> {
     /// Note: assuming all neighbors in the input list, 'neighbors', are valid
     /// Two data copies are involved: 1) Copy from the immutable `neighbors` to the proper byte array with neighbor length
     /// 2) Copy from the byte array to bf-tree
-    #[allow(clippy::expect_used)]
     pub fn set_neighbors(&self, vector_id: I, neighbors: &[I]) -> ANNResult<()> {
         #[cfg(test)]
         self.num_get_calls.increment();
@@ -164,25 +131,11 @@ impl<I: VectorId> NeighborProvider<I> {
             ));
         }
 
-        // Serialize the key, vector_id, into a byte string, &[u8]
         let i = vector_id.into_usize();
         let key = bytes_of::<usize>(&i);
+        let value = neighbor_codec::serialize(neighbors);
 
-        // Serialize the value, neighbor list, into a byte string, &u[8]
-        let neighbor_list_edges_in_byte = cast_slice::<I, u8>(neighbors);
-
-        let neighbor_list_len = neighbors
-            .len()
-            .try_into_vector_id()
-            .expect("Fail to convert #neighbors as neighbor vec Id");
-        let neighbor_list_len_in_byte = bytes_of::<I>(&neighbor_list_len);
-
-        // Format
-        // |VectorId|...|VectorId|VectorId (list length)|
-        let value: &[u8] = &[neighbor_list_edges_in_byte, neighbor_list_len_in_byte].concat();
-
-        // Insert the assembled (K, V) pair into bf-tree
-        self.adjacency_list_index.insert(key, value);
+        self.adjacency_list_index.insert(key, &value);
 
         Ok(())
     }

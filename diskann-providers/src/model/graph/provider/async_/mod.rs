@@ -7,6 +7,10 @@ pub mod experimental;
 pub mod common;
 pub use common::{PrefetchCacheLineLevel, StartPoints, VectorGuard};
 
+// Backend-agnostic codec helpers shared by `bf_tree` and `rocksdb` providers.
+#[cfg(any(feature = "bf_tree", feature = "rocksdb_provider"))]
+pub mod kv_codec;
+
 pub(crate) mod postprocess;
 
 pub mod distances;

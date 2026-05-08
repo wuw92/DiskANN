@@ -16,6 +16,7 @@ use diskann::{
 use thiserror::Error;
 
 use super::super::common::TestCallCount;
+use super::super::kv_codec::vector as vector_codec;
 use super::ConfigError;
 
 pub struct VectorProvider<T: VectorRepr, I: VectorId = u32> {
@@ -114,18 +115,8 @@ impl<T: VectorRepr, I: VectorId> VectorProvider<T, I> {
     /// * `v.dim() != self.dim()`: The slice must have the proper length
     #[inline(always)]
     pub(crate) fn set_vector_sync(&self, i: usize, v: &[T]) -> ANNResult<()> {
-        if v.len() != self.dim {
-            return Err(ANNError::log_index_error(
-                "Vector dimension is not equal to the expected dimension.",
-            ));
-        }
-        if i >= self.total() {
-            return Err(ANNError::log_index_error(
-                "Vector id is out of boundary in the dataset.",
-            ));
-        }
+        vector_codec::validate_set(i, self.total(), v.len(), self.dim)?;
 
-        // Serialize the key, vector_id, into a byte string, &[u8]
         let key = bytes_of::<usize>(&i);
         let value = cast_slice::<T, u8>(v);
 
@@ -152,13 +143,8 @@ impl<T: VectorRepr, I: VectorId> VectorProvider<T, I> {
             .read(bytes_of(&i), bytemuck::must_cast_slice_mut::<_, u8>(buffer))
         {
             bf_tree::LeafReadResult::Found(read_size) => {
-                let vector_size = std::mem::size_of::<T>() * self.dim;
-                if read_size as usize != vector_size {
-                    return Err(ANNError::log_index_error(format!(
-                        "The bf-tree entry for vector id {} is marked as found but has size {} instead of the expected size {}",
-                        i, read_size, vector_size,
-                    )));
-                }
+                let expected = std::mem::size_of::<T>() * self.dim;
+                vector_codec::validate_read_size("bf-tree", i, read_size as usize, expected)?;
             }
             bf_tree::LeafReadResult::Deleted => {
                 return Err(ANNError::log_index_error(format!(

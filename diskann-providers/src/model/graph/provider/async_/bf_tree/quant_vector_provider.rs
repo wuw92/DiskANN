@@ -16,6 +16,7 @@ use diskann_vector::distance::Metric;
 use thiserror::Error;
 
 use super::super::common::TestCallCount;
+use super::super::kv_codec::quant as quant_codec;
 use super::ConfigError;
 use crate::{
     model::{
@@ -147,12 +148,7 @@ impl QuantVectorProvider {
         self.num_get_calls.increment();
         match self.quant_vector_index.read(bytes_of(&i), buffer) {
             bf_tree::LeafReadResult::Found(read_size) => {
-                if read_size as usize != expected {
-                    return ANNResult::Err(ANNError::log_index_error(format!(
-                        "The bf-tree entry for vector id {} is marked as found but has size {} instead of the expected size {}",
-                        i, read_size, expected,
-                    )));
-                }
+                quant_codec::validate_read_size("bf-tree", i, read_size as usize, expected)?;
             }
             bf_tree::LeafReadResult::Deleted => {
                 return ANNResult::Err(ANNError::log_index_error(format!(
@@ -195,19 +191,8 @@ impl QuantVectorProvider {
     where
         T: Copy + VectorRepr,
     {
-        if i >= self.total() {
-            return Err(ANNError::log_index_error(
-                "Vector id is out of boundary in the dataset.",
-            ));
-        }
-
         let vf32: &[f32] = &T::as_f32(v).into_ann_result()?;
-
-        if vf32.len() != self.full_dim() {
-            return Err(ANNError::log_index_error(
-                "Vector f32 dimension is not equal to the expected dimension.",
-            ));
-        }
+        quant_codec::validate_set(i, self.total(), vf32.len(), self.full_dim())?;
 
         // Serialize the key into a byte string, &[u8]
         let key = bytes_of::<usize>(&i);
@@ -233,18 +218,8 @@ impl QuantVectorProvider {
     /// * `v.len() != self.pq_chunks()`: `v` must have the right length.
     #[cfg(test)]
     pub(crate) fn set_quant_vector(&self, i: usize, v: &[u8]) -> ANNResult<()> {
-        if i >= self.total() {
-            return Err(ANNError::log_index_error(
-                "Vector id is out of boundary in the dataset.",
-            ));
-        }
-        if v.len() != self.pq_chunks() {
-            return Err(ANNError::log_index_error(
-                "Vector dimension is not equal to the expected dimension.",
-            ));
-        }
+        quant_codec::validate_set_quant(i, self.total(), v.len(), self.pq_chunks())?;
 
-        // Update pq vector with id = i to v
         let key = bytes_of::<usize>(&i);
 
         self.quant_vector_index.insert(key, v);

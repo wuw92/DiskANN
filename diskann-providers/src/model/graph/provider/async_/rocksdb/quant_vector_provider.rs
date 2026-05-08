@@ -16,6 +16,7 @@ use rocksdb::DB;
 use thiserror::Error;
 
 use super::super::common::TestCallCount;
+use super::super::kv_codec::quant as quant_codec;
 use super::{Config, open_db};
 use crate::{
     model::{
@@ -163,14 +164,7 @@ impl QuantVectorProvider {
             }
         };
 
-        if bytes.len() != expected {
-            return ANNResult::Err(ANNError::log_index_error(format!(
-                "The rocksdb entry for vector id {} has size {} instead of the expected size {}",
-                i,
-                bytes.len(),
-                expected,
-            )));
-        }
+        quant_codec::validate_read_size("rocksdb", i, bytes.len(), expected)?;
 
         buffer.copy_from_slice(&bytes);
         Ok(())
@@ -193,19 +187,8 @@ impl QuantVectorProvider {
     where
         T: Copy + VectorRepr,
     {
-        if i >= self.total() {
-            return Err(ANNError::log_index_error(
-                "Vector id is out of boundary in the dataset.",
-            ));
-        }
-
         let vf32: &[f32] = &T::as_f32(v).into_ann_result()?;
-
-        if vf32.len() != self.full_dim() {
-            return Err(ANNError::log_index_error(
-                "Vector f32 dimension is not equal to the expected dimension.",
-            ));
-        }
+        quant_codec::validate_set(i, self.total(), vf32.len(), self.full_dim())?;
 
         let key = bytes_of::<usize>(&i);
 
@@ -230,16 +213,7 @@ impl QuantVectorProvider {
     /// * `v.len() != self.pq_chunks()`: wrong dimension.
     #[cfg(test)]
     pub(crate) fn set_quant_vector(&self, i: usize, v: &[u8]) -> ANNResult<()> {
-        if i >= self.total() {
-            return Err(ANNError::log_index_error(
-                "Vector id is out of boundary in the dataset.",
-            ));
-        }
-        if v.len() != self.pq_chunks() {
-            return Err(ANNError::log_index_error(
-                "Vector dimension is not equal to the expected dimension.",
-            ));
-        }
+        quant_codec::validate_set_quant(i, self.total(), v.len(), self.pq_chunks())?;
 
         let key = bytes_of::<usize>(&i);
 
