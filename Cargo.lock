@@ -744,6 +744,7 @@ dependencies = [
  "half",
  "iai-callgrind",
  "polonius-the-crab",
+ "rand 0.9.4",
  "rstest",
  "serde",
  "serde_json",

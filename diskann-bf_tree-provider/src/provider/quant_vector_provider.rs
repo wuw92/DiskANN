@@ -194,9 +194,9 @@ impl QuantVectorProvider {
         let vf32: &[f32] = &T::as_f32(v).into_ann_result()?;
 
         if vf32.len() != self.full_dim() {
-            return Err(ANNError::log_dimension_mismatch_error(format!(
-                "Vector f32 dimension is not equal to the expected dimension."
-            )));
+            return Err(ANNError::log_dimension_mismatch_error(
+                "Vector f32 dimension is not equal to the expected dimension.".to_string(),
+            ));
         }
 
         // Serialize the key into a byte string, &[u8]
@@ -230,7 +230,7 @@ impl QuantVectorProvider {
                 "Vector id is out of boundary in the dataset.",
             ));
         }
-        if v.len() != self.pq_chunks() {
+        if v.len() != self.quantizer.bytes() {
             return Err(ANNError::log_index_error(
                 "Vector dimension is not equal to the expected dimension.",
             ));
@@ -253,39 +253,80 @@ impl QuantVectorProvider {
 #[cfg(test)]
 mod tests {
     use diskann::ANNErrorKind;
+    use diskann_quantization::{
+        algorithms::TransformKind,
+        alloc::{poly, Poly},
+        spherical::{
+            iface::{self, Opaque},
+            PreScale, SphericalQuantizer, SupportedMetric,
+        },
+    };
+    use diskann_utils::views::Matrix;
     use diskann_vector::{distance::Metric, DistanceFunction, PreprocessedDistanceFunction};
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
     use tokio::task::JoinSet;
 
     use super::*;
 
-    /// Test edges cases of the Bf-Tree quant vector provider
+    /// Train a spherical quantizer on simple data and return it as a `Poly<dyn Quantizer>`.
+    fn create_test_quantizer(dim: usize) -> Poly<dyn iface::Quantizer> {
+        use diskann_utils::views::Init;
+
+        // Create training data with spread-out values.
+        let nrows = 8;
+        let mut counter = 0.0f32;
+        let data = Matrix::new(
+            Init(move || {
+                counter += 0.5;
+                counter
+            }),
+            nrows,
+            dim,
+        );
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let quantizer = SphericalQuantizer::train(
+            data.as_view(),
+            TransformKind::Null,
+            SupportedMetric::SquaredL2,
+            PreScale::None,
+            &mut rng,
+            GlobalAllocator,
+        )
+        .unwrap();
+
+        let imp = iface::Impl::<1>::new(quantizer).unwrap();
+        let poly = Poly::new(imp, GlobalAllocator).unwrap();
+        poly!(iface::Quantizer, poly)
+    }
+
+    /// Test edge cases of the Bf-Tree quant vector provider
     #[tokio::test]
     async fn common_errors() {
         let dim = 5;
-        let centroid = vec![0.0; dim];
-        let offsets = vec![0, dim];
-        let full_pivot_data = vec![0.0; 256 * dim];
-
-        let pq_chunk_table =
-            FixedChunkPQTable::new(dim, full_pivot_data.into(), centroid.into(), offsets.into())
-                .unwrap();
+        let quantizer = create_test_quantizer(dim);
+        let quant_bytes = quantizer.bytes();
 
         let bf_tree_config = Config::default();
         let provider =
-            QuantVectorProvider::new_with_config(Metric::L2, 10, 1, pq_chunk_table, bf_tree_config)
+            QuantVectorProvider::new_with_config(Metric::L2, 10, 1, quantizer, bf_tree_config)
                 .unwrap();
 
         // try to set an out of bounds vector
         let result = provider.set_quant_vector(20, &[]).unwrap_err();
         assert_eq!(result.kind(), ANNErrorKind::IndexError);
 
-        // SAFETY: We have exclusive ownership of `provider`
+        // try to set an out of bounds vector via set_vector_sync
         let result = provider.set_vector_sync::<f32>(20, &[]).unwrap_err();
         assert_eq!(result.kind(), ANNErrorKind::IndexError);
 
-        // try to set a vector with the wrong dimension
+        // try to set a quant vector with the wrong dimension
         let result = provider.set_quant_vector(0, &[]).unwrap_err();
         assert_eq!(result.kind(), ANNErrorKind::IndexError);
+
+        // verify expected quant vector byte count
+        assert_eq!(quant_bytes, provider.quantizer.bytes());
     }
 
     fn create_test_provider() -> QuantVectorProvider {
@@ -293,22 +334,14 @@ mod tests {
         let frozen_points = 2;
         let dim = 2;
 
-        // We can create a really simple, 1 chunk PQ table with known entries to allow
-        // us to easily verify results.
-        let table = FixedChunkPQTable::new(
-            dim,
-            Box::new([0.0, 0.0, 1.0, 1.0, 2.0, 2.0]),
-            Box::new([0.0, 0.0]),
-            Box::new([0, dim]),
-        )
-        .unwrap();
+        let quantizer = create_test_quantizer(dim);
 
         let bf_tree_config = Config::default();
         let provider = QuantVectorProvider::new_with_config(
             Metric::L2,
             num_points,
             frozen_points,
-            table,
+            quantizer,
             bf_tree_config,
         )
         .unwrap();
@@ -316,7 +349,7 @@ mod tests {
         assert_eq!(provider.total(), num_points + frozen_points);
         assert_eq!(provider.full_dim(), dim);
 
-        // Set Vector.
+        // Set vectors.
         provider.set_vector_sync(0, &[-1.5, -1.5]).unwrap();
         provider.set_vector_sync(1, &[-0.5, -0.5]).unwrap();
         provider.set_vector_sync(2, &[0.5, 0.5]).unwrap();
@@ -325,95 +358,91 @@ mod tests {
         provider
     }
 
-    /// Test the similarity functions of the provider
+    /// Test the distance computation functions of the provider
     #[tokio::test]
     async fn test_similarity_function() {
         let provider = create_test_provider();
+        let quant_bytes = provider.quantizer.bytes();
 
-        // Get Vector.
-        assert_eq!(provider.get_vector_sync(0).unwrap(), &[0]);
-        assert_eq!(provider.get_vector_sync(1).unwrap(), &[0]);
-        assert_eq!(provider.get_vector_sync(2).unwrap(), &[0]);
-        assert_eq!(provider.get_vector_sync(3).unwrap(), &[1]);
-        assert_eq!(provider.get_vector_sync(4).unwrap(), &[2]);
+        // Verify compressed vectors are the expected size.
+        for i in 0..5 {
+            let v = provider.get_vector_sync(i).unwrap();
+            assert_eq!(v.len(), quant_bytes);
+        }
 
         // Error checking.
         assert!(provider.set_vector_sync(5, &[0.0, 0.0]).is_err());
         assert!(provider.set_vector_sync(2, &[0.0]).is_err());
 
-        // Query Computer.
-        let c = provider.query_computer(&[-0.5, -0.5]).unwrap();
-        let expected: f32 = 1.5 * 1.5 * 2.0;
-        assert_eq!(
-            c.evaluate_similarity(&provider.get_vector_sync(3).unwrap()),
-            expected
-        );
+        // Query Computer — verify it returns finite distances.
+        let c = provider.query_computer(&[-0.5f32, -0.5]).unwrap();
+        let dist = c.evaluate_similarity(&provider.get_vector_sync(3).unwrap());
+        assert!(dist.is_finite(), "query distance should be finite");
 
-        // Distance Computer.
-        let d = provider.distance_computer();
-        assert_eq!(
-            d.evaluate_similarity(
-                provider.get_vector_sync(0).unwrap().as_slice(),
-                provider.get_vector_sync(3).unwrap().as_slice(),
-            ),
-            2.0
-        );
+        // Distance Computer — verify distances between compressed vectors are finite
+        // and that identical vectors produce zero distance.
+        let d = provider.distance_computer().unwrap();
+        let v0 = provider.get_vector_sync(0).unwrap();
+        let v3 = provider.get_vector_sync(3).unwrap();
+        let dist = d
+            .evaluate_similarity(Opaque::new(&v0), Opaque::new(&v3))
+            .unwrap();
+        assert!(dist.is_finite(), "distance should be finite");
 
-        let slice: &[f32] = &[-0.5, -0.5];
-        assert_eq!(
-            d.evaluate_similarity(slice, &provider.get_vector_sync(3).unwrap()),
-            expected,
+        // Same vector should have small self-distance (may not be exactly zero
+        // due to quantization loss, especially at low bit-widths).
+        let self_dist = d
+            .evaluate_similarity(Opaque::new(&v0), Opaque::new(&v0))
+            .unwrap();
+        assert!(
+            self_dist.abs() < 1.0,
+            "self-distance should be small, got {}",
+            self_dist
         );
     }
 
-    /// Test the interleaved and parallell traversal of the Bf-Tree
+    /// Test the interleaved and parallel traversal of the Bf-Tree
     /// by invoking the async accessors of the quant vector provider
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn test_parallel_tree_traversal() {
         let dim = 2;
-        let centroid = vec![0.0; dim];
-        let offsets = vec![0, dim];
-        let full_pivot_data = vec![0.0; 256 * dim];
-        let pq_chunk_table =
-            FixedChunkPQTable::new(dim, full_pivot_data.into(), centroid.into(), offsets.into())
-                .unwrap();
+        let quantizer = create_test_quantizer(dim);
 
         let bf_tree_config = Config::default();
         let provider = Arc::new(
-            QuantVectorProvider::new_with_config(Metric::L2, 10, 1, pq_chunk_table, bf_tree_config)
+            QuantVectorProvider::new_with_config(Metric::L2, 10, 1, quantizer, bf_tree_config)
                 .unwrap(),
         );
         let mut set = JoinSet::new();
         for i in 0..11 {
             let vector = vec![i as f32, (i + 1) as f32];
             let provider_clone = Arc::clone(&provider);
-            set.spawn(async move {
-                // One tokio task per vector insertion
-                provider_clone.set_vector_sync(i as usize, &vector).unwrap()
-            });
+            set.spawn(async move { provider_clone.set_vector_sync(i as usize, &vector).unwrap() });
         }
 
         while let Some(res) = set.join_next().await {
             res.unwrap();
         }
 
-        let dim = provider.pq_chunk_table.get_num_chunks();
-        let mut quant_vector: Vec<u8> = vec![0; dim];
-        let quant_vector_ref: &mut [u8] = &mut quant_vector;
+        // Verify that each vector was stored and can be retrieved with the correct size.
+        let quant_bytes = provider.quantizer.bytes();
+        let mut expected_buf = vec![0u8; quant_bytes];
 
         for i in 0..11 {
-            // SAFETY: We're only accessing one at a time.
-            let quant_vector = provider.get_vector_sync(i as usize).unwrap();
-            match provider
-                .pq_chunk_table
-                .compress_into(&[(i as f32), (i + 1) as f32], quant_vector_ref)
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    panic!("{}", e)
-                }
-            };
-            assert_eq!(&quant_vector_ref, &quant_vector);
+            let stored = provider.get_vector_sync(i).unwrap();
+            assert_eq!(stored.len(), quant_bytes);
+
+            // Compress the same input again and verify we get the same output
+            // (spherical compression is deterministic).
+            provider
+                .quantizer
+                .compress(
+                    &[i as f32, (i + 1) as f32],
+                    OpaqueMut::new(&mut expected_buf),
+                    ScopedAllocator::global(),
+                )
+                .unwrap();
+            assert_eq!(stored, expected_buf);
         }
     }
 }

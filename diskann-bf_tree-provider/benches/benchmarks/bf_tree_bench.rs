@@ -12,13 +12,18 @@ use diskann::{
 };
 use diskann_bf_tree_provider::provider::{BfTreeProvider, BfTreeProviderParameters};
 use diskann_providers::{
-    index::diskann_async,
     model::graph::provider::async_::common::{FullPrecision, NoDeletes},
     storage::{FileStorageProvider, StorageReadProvider},
-    utils::{create_thread_pool_for_bench, VectorDataIterator},
+    utils::VectorDataIterator,
+};
+use diskann_quantization::{
+    algorithms::TransformKind,
+    alloc::{poly, GlobalAllocator, Poly},
+    spherical::{iface, PreScale, SphericalQuantizer, SupportedMetric},
 };
 use diskann_utils::{io::read_bin, views::MatrixView};
 use diskann_vector::distance::Metric;
+use rand::SeedableRng;
 use tokio::runtime::Runtime;
 
 pub fn benchmark_bf_tree_insert(c: &mut Criterion) {
@@ -142,14 +147,19 @@ async fn bf_tree_setup_index() -> Arc<DiskANNIndex<BfTreeProvider<f32>>> {
     let dim = train_data.ncols();
     let num_points = train_data.nrows();
 
-    let pool = create_thread_pool_for_bench();
-    let pq_chunk_table = diskann_async::train_pq(
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let sq = SphericalQuantizer::train(
         train_data.as_view(),
-        32,
-        &mut diskann_providers::utils::create_rnd_in_tests(),
-        pool.as_ref(),
+        TransformKind::Null,
+        SupportedMetric::SquaredL2,
+        PreScale::ReciprocalMeanNorm,
+        &mut rng,
+        GlobalAllocator,
     )
     .unwrap();
+    let imp = iface::Impl::<1>::new(sq).unwrap();
+    let poly = Poly::new(imp, GlobalAllocator).unwrap();
+    let quantizer: Poly<dyn iface::Quantizer> = poly!(iface::Quantizer, poly);
 
     let conf = graph::config::Builder::new(
         target_degree,
@@ -176,8 +186,7 @@ async fn bf_tree_setup_index() -> Arc<DiskANNIndex<BfTreeProvider<f32>>> {
         graph_params: None,
     };
 
-    let provider =
-        BfTreeProvider::<f32>::new(params, start_points, pq_chunk_table, NoDeletes).unwrap();
+    let provider = BfTreeProvider::<f32>::new(params, start_points, quantizer, NoDeletes).unwrap();
 
     Arc::new(DiskANNIndex::new(conf, provider, None))
 }

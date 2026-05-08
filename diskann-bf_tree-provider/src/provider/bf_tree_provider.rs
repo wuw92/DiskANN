@@ -147,13 +147,18 @@ use diskann_providers::storage::{StorageReadProvider, StorageWriteProvider};
 /// );
 /// ```
 ///
-/// ## Full-Precision and PQ - No Deletes
+/// ## Full-Precision and Spherical Quantization - No Deletes
 ///
-/// To create a two-level provider with a PQ-based quant vector store, a
-/// [`FixedChunkPQTable`] can be supplied for the `quant_precursor` argument, as this
+/// To create a two-level provider with a spherical quantization-based quant vector store,
+/// a `Poly<dyn Quantizer>` can be supplied for the `quant_precursor` argument, as this
 /// implements the [`CreateQuantProvider`] trait.
 /// ```
-/// use diskann_providers::model::pq::FixedChunkPQTable;
+/// use diskann_quantization::{
+///     alloc::{GlobalAllocator, Poly, poly},
+///     algorithms::TransformKind,
+///     spherical::{iface, SphericalQuantizer, SupportedMetric, PreScale},
+/// };
+/// use diskann_utils::views::{Init, Matrix};
 /// use diskann_bf_tree_provider::provider::{
 ///     BfTreeProvider, BfTreeProviderParameters
 /// };
@@ -161,15 +166,20 @@ use diskann_providers::storage::{StorageReadProvider, StorageWriteProvider};
 /// use diskann_vector::distance::Metric;
 /// use bf_tree::Config;
 /// use std::num::NonZeroUsize;
+/// use rand::rngs::StdRng;
+/// use rand::SeedableRng;
 ///
-/// // An example PQ table.
 /// let dim = 4;
-/// let table = FixedChunkPQTable::new(
-///     dim,
-///     Box::new([0.0, 0.0, 0.0, 0.0]),
-///     Box::new([0.0, 0.0, 0.0, 0.0]),
-///     Box::new([0, dim]),
+/// let data = Matrix::new(Init(|| 1.0f32), 4, dim);
+/// let mut rng = StdRng::seed_from_u64(42);
+/// let sq = SphericalQuantizer::train(
+///     data.as_view(), TransformKind::Null,
+///     SupportedMetric::SquaredL2, PreScale::None,
+///     &mut rng, GlobalAllocator,
 /// ).unwrap();
+/// let imp = iface::Impl::<1>::new(sq).unwrap();
+/// let poly = Poly::new(imp, GlobalAllocator).unwrap();
+/// let quantizer: Poly<dyn iface::Quantizer> = poly!(iface::Quantizer, poly);
 ///
 /// let parameters = BfTreeProviderParameters {
 ///     max_points: 5,
@@ -187,17 +197,22 @@ use diskann_providers::storage::{StorageReadProvider, StorageWriteProvider};
 /// // Create a table that supports 5 points and 1 start point.
 /// let provider = BfTreeProvider::<f32>::new_empty(
 ///     parameters,
-///     table,
+///     quantizer,
 ///     NoDeletes,
 /// );
 /// ```
 ///
-/// ## Full-Precision and PQ - With Deletes.
+/// ## Full-Precision and Spherical Quantization - With Deletes.
 ///
-/// If deletes are desired, than the type [`TableBasedDeletes`] can be passed to the
+/// If deletes are desired, then the type [`TableBasedDeletes`] can be passed to the
 /// constructor.
 /// ```
-/// use diskann_providers::model::pq::FixedChunkPQTable;
+/// use diskann_quantization::{
+///     alloc::{GlobalAllocator, Poly, poly},
+///     algorithms::TransformKind,
+///     spherical::{iface, SphericalQuantizer, SupportedMetric, PreScale},
+/// };
+/// use diskann_utils::views::{Init, Matrix};
 /// use diskann_bf_tree_provider::provider::{
 ///     BfTreeProvider, BfTreeProviderParameters
 /// };
@@ -205,15 +220,20 @@ use diskann_providers::storage::{StorageReadProvider, StorageWriteProvider};
 /// use diskann_vector::distance::Metric;
 /// use bf_tree::Config;
 /// use std::num::NonZeroUsize;
+/// use rand::rngs::StdRng;
+/// use rand::SeedableRng;
 ///
-/// // An example PQ table.
 /// let dim = 4;
-/// let table = FixedChunkPQTable::new(
-///     dim,
-///     Box::new([0.0, 0.0, 0.0, 0.0]),
-///     Box::new([0.0, 0.0, 0.0, 0.0]),
-///     Box::new([0, dim]),
+/// let data = Matrix::new(Init(|| 1.0f32), 4, dim);
+/// let mut rng = StdRng::seed_from_u64(42);
+/// let sq = SphericalQuantizer::train(
+///     data.as_view(), TransformKind::Null,
+///     SupportedMetric::SquaredL2, PreScale::None,
+///     &mut rng, GlobalAllocator,
 /// ).unwrap();
+/// let imp = iface::Impl::<1>::new(sq).unwrap();
+/// let poly = Poly::new(imp, GlobalAllocator).unwrap();
+/// let quantizer: Poly<dyn iface::Quantizer> = poly!(iface::Quantizer, poly);
 ///
 /// let parameters = BfTreeProviderParameters {
 ///     max_points: 5,
@@ -231,7 +251,7 @@ use diskann_providers::storage::{StorageReadProvider, StorageWriteProvider};
 /// // Create a table that supports 5 points and 1 start point.
 /// let provider = BfTreeProvider::<f32, _, _>::new_empty(
 ///     parameters,
-///     table,
+///     quantizer,
 ///     TableBasedDeletes,
 /// );
 /// ```
@@ -2280,6 +2300,43 @@ mod tests {
     use super::*;
     use diskann_providers::model::graph::provider::async_::common::TableBasedDeletes;
     use diskann_providers::storage::FileStorageProvider;
+    use diskann_quantization::{
+        algorithms::TransformKind,
+        alloc::{poly, Poly},
+        spherical::{iface, PreScale, SphericalQuantizer, SupportedMetric},
+    };
+    use diskann_utils::views::{Init, Matrix};
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    /// Train a spherical quantizer for tests.
+    fn create_test_quantizer(dim: usize) -> Poly<dyn iface::Quantizer> {
+        let nrows = 8;
+        let mut counter = 0.0f32;
+        let data = Matrix::new(
+            Init(move || {
+                counter += 0.5;
+                counter
+            }),
+            nrows,
+            dim,
+        );
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let quantizer = SphericalQuantizer::train(
+            data.as_view(),
+            TransformKind::Null,
+            SupportedMetric::SquaredL2,
+            PreScale::None,
+            &mut rng,
+            GlobalAllocator,
+        )
+        .unwrap();
+
+        let imp = iface::Impl::<1>::new(quantizer).unwrap();
+        let poly = Poly::new(imp, GlobalAllocator).unwrap();
+        poly!(iface::Quantizer, poly)
+    }
 
     #[tokio::test]
     async fn test_data_provider_and_delete_interface() {
@@ -2667,14 +2724,8 @@ mod tests {
         let mut quant_config = Config::new(&quant_path, bytes_quant);
         quant_config.storage_backend(bf_tree::StorageBackend::Std);
 
-        // Create PQ table
-        let pq_table = FixedChunkPQTable::new(
-            dim,
-            vec![0.0; dim * 256].into_boxed_slice(),
-            vec![0.0; dim].into_boxed_slice(),
-            Box::new([0, 4, dim]),
-        )
-        .unwrap();
+        // Create spherical quantizer
+        let quantizer = create_test_quantizer(dim);
 
         // Create provider parameters
         let params = BfTreeProviderParameters {
@@ -2694,7 +2745,7 @@ mod tests {
         let provider =
             BfTreeProvider::<f32, QuantVectorProvider, TableDeleteProviderAsync>::new_empty(
                 params.clone(),
-                pq_table.clone(),
+                quantizer,
                 TableBasedDeletes,
             )
             .unwrap();
@@ -2750,38 +2801,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify PQ table
-        let original_pq = &provider.quant_vectors.pq_chunk_table;
-        let loaded_pq = &loaded_provider.quant_vectors.pq_chunk_table;
+        // Verify quantizer properties match after round-trip
         assert_eq!(
-            original_pq.get_dim(),
-            loaded_pq.get_dim(),
-            "PQ table dim mismatch"
+            provider.quant_vectors.quantizer.full_dim(),
+            loaded_provider.quant_vectors.quantizer.full_dim(),
+            "Quantizer full_dim mismatch"
         );
         assert_eq!(
-            original_pq.get_num_chunks(),
-            loaded_pq.get_num_chunks(),
-            "PQ table num_chunks mismatch"
+            provider.quant_vectors.quantizer.bytes(),
+            loaded_provider.quant_vectors.quantizer.bytes(),
+            "Quantizer bytes mismatch"
         );
         assert_eq!(
-            original_pq.get_num_centers(),
-            loaded_pq.get_num_centers(),
-            "PQ table num_centers mismatch"
-        );
-        assert_eq!(
-            original_pq.get_pq_table(),
-            loaded_pq.get_pq_table(),
-            "PQ table data mismatch"
-        );
-        assert_eq!(
-            original_pq.get_centroids(),
-            loaded_pq.get_centroids(),
-            "PQ table centroids mismatch"
-        );
-        assert_eq!(
-            original_pq.get_chunk_offsets(),
-            loaded_pq.get_chunk_offsets(),
-            "PQ table chunk_offsets mismatch"
+            provider.quant_vectors.quantizer.nbits(),
+            loaded_provider.quant_vectors.quantizer.nbits(),
+            "Quantizer nbits mismatch"
         );
 
         // Verify vectors
@@ -2971,13 +3005,7 @@ mod tests {
         let num_start_points = NonZeroUsize::new(1).unwrap();
         let ctx = &DefaultContext;
 
-        let pq_table = FixedChunkPQTable::new(
-            dim,
-            vec![0.0; dim * 256].into_boxed_slice(),
-            vec![0.0; dim].into_boxed_slice(),
-            Box::new([0, 4, dim]),
-        )
-        .unwrap();
+        let quantizer = create_test_quantizer(dim);
 
         let provider =
             BfTreeProvider::<f32, QuantVectorProvider, TableDeleteProviderAsync>::new_empty(
@@ -2993,7 +3021,7 @@ mod tests {
                     neighbor_list_provider_config: Config::default(),
                     graph_params: None,
                 },
-                pq_table,
+                quantizer,
                 TableBasedDeletes,
             )
             .unwrap();
