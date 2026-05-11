@@ -1,0 +1,119 @@
+{
+  "search_directories": ["test_data/sift"],
+  "jobs": [
+    {
+      "type": "graph-index-build",
+      "content": {
+        "source": {
+          "index-source": "Build",
+          "data_type": "float32",
+          "data": "siftsmall_learn.bin",
+          "distance": "squared_l2",
+          "max_degree": 32,
+          "l_build": 50,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 1,
+          "start_point_strategy": "medoid",
+          "graph_provider": "inmem"
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "siftsmall_query_100pts.bin",
+          "groundtruth": "siftsmall_gt100",
+          "reps": 3,
+          "num_threads": [1],
+          "runs": [
+            {"search_n": 20, "search_l": [20, 50, 100], "recall_k": 10}
+          ]
+        }
+      }
+    },
+    {
+      "type": "graph-index-build",
+      "content": {
+        "source": {
+          "index-source": "Build",
+          "data_type": "float32",
+          "data": "siftsmall_learn.bin",
+          "distance": "squared_l2",
+          "max_degree": 32,
+          "l_build": 50,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 1,
+          "start_point_strategy": "medoid",
+          "graph_provider": "bftree"
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "siftsmall_query_100pts.bin",
+          "groundtruth": "siftsmall_gt100",
+          "reps": 3,
+          "num_threads": [1],
+          "runs": [
+            {"search_n": 20, "search_l": [20, 50, 100], "recall_k": 10}
+          ]
+        }
+      }
+    },
+    {
+      "type": "graph-index-build",
+      "content": {
+        "source": {
+          "index-source": "Build",
+          "data_type": "float32",
+          "data": "siftsmall_learn.bin",
+          "distance": "squared_l2",
+          "max_degree": 32,
+          "l_build": 50,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 1,
+          "start_point_strategy": "medoid",
+          "graph_provider": "rocksdb"
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "siftsmall_query_100pts.bin",
+          "groundtruth": "siftsmall_gt100",
+          "reps": 3,
+          "num_threads": [1],
+          "runs": [
+            {"search_n": 20, "search_l": [20, 50, 100], "recall_k": 10}
+          ]
+        }
+      }
+    },
+    {
+      "type": "disk-index",
+      "content": {
+        "source": {
+          "disk-index-source": "Build",
+          "data_type": "float32",
+          "data": "siftsmall_learn.bin",
+          "distance": "squared_l2",
+          "dim": 128,
+          "max_degree": 32,
+          "l_build": 50,
+          "num_threads": 1,
+          "build_ram_limit_gb": 2.0,
+          "num_pq_chunks": 128,
+          "quantization_type": "FP",
+          "save_path": "bench_out/sift10k_disk_index"
+        },
+        "search_phase": {
+          "queries": "siftsmall_query_100pts.bin",
+          "groundtruth": "siftsmall_gt100",
+          "search_list": [20, 50, 100],
+          "beam_width": 4,
+          "recall_at": 10,
+          "num_threads": 1,
+          "is_flat_search": false,
+          "distance": "squared_l2",
+          "vector_filters_file": null
+        }
+      }
+    }
+  ]
+}

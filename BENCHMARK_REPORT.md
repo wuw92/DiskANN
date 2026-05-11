@@ -1,22 +1,36 @@
-# Graph-Storage Backend Benchmark: inmem vs BfTree vs RocksDB
+# DiskANN Storage Backend Benchmark: inmem / BfTree / RocksDB / disk-index
 
 ## 摘要
 
-首次量化 DiskANN 三个图存储后端（inmem / BfTree / RocksDB）在同一
-workload 下的相对开销。结论：
+首次量化 DiskANN 四个存储后端在同一 workload 下的相对开销
+（siftsmall, 25K base × 100 query × 128 dim, single thread）：
 
-| 维度 | inmem | BfTree | RocksDB (调优后) |
-|---|---:|---:|---:|
-| Build 时间 | **1×** | 5.2× | 18.1× |
-| Search QPS @ Ls=100 | **1×** | 0.18× (5.6× 慢) | 0.052× (19.4× 慢) |
-| Recall@10 | 0.991-1.0 | 0.991-1.0 | 0.991-1.0 |
-| Avg cmps / hops | 完全一致（算法层不变） |
+| 维度 | inmem | BfTree | RocksDB (调优后) | disk-index |
+|---|---:|---:|---:|---:|
+| Build 时间 | **1.92 s** | 9.60 s | 34.15 s | **5.35 s** |
+| Search QPS @ Ls=100 | **8,280** | 1,336 | 449 | 44.9 |
+| Search Avg Latency @ Ls=100 | **119 µs** | 747 µs | 2225 µs | 22,266 µs |
+| Recall@10 | 0.991–1.0 | 0.991–1.0 | 0.991–1.0 | 0.992–1.0 |
+| Avg cmps (Ls=100) | 1554.59 | 1554.59 | 1554.59 | 1791.0 |
+| Avg hops (Ls=100) | 103.38 | 103.38 | 103.38 | 115.0 |
 
-**关键发现**：三个 backend 在算法层（cmps、hops、recall）完全一致，
-backend 只贡献每次 vector / neighbor access 的 µs 差异。即便对 RocksDB
-做了 block cache + compression + write buffer + zero-copy reads
-（`get_pinned`）的优化，相对 inmem 仍有 19× 差距，主要来自 RocksDB FFI
-调用 + LSM 读路径 + memtable 跳表查找的固有成本，单纯调参难以追平。
+**两个关键发现：**
+
+1. **三个 in-memory backend（inmem/bftree/rocksdb）算法层完全一致**：
+   同样的 cmps、hops、recall。Backend 只贡献每次 vector/neighbor
+   access 的 µs 差异。即便对 RocksDB 做了 block cache + compression +
+   write buffer + zero-copy reads (`get_pinned`) 的优化，相对 inmem
+   仍有 19× 差距，主要来自 FFI + LSM read path 的固有成本。
+
+2. **disk-index 是另一类架构**：build 比 BfTree/RocksDB **更快**（一次性
+   写入 vs per-insert KV），但 search 受 IO 主导慢 ~350× vs inmem。
+   每 query 的 13–22 ms latency 中 ~96% 来自 disk IO，CPU 仅 ~300 µs。
+
+3. **RocksDB / BfTree = 3-3.5×**：两个 KV 后端的直接比较——rocksdb 慢
+   于 bftree **不是 IO 量级差异**（两者都没真正 IO，数据全在 memtable
+   / buffered tree），而是 per-op overhead：FFI、LSM read path、memtable
+   skiplist 等。BfTree 是纯 Rust 实现，结构上更贴合 µs 级随机点查的
+   DiskANN workload。
 
 ## 测试方法
 
@@ -249,11 +263,83 @@ graph diameter 增加 → 每 query 需要更多 neighbor lookups → KV 后端 
 8. **借鉴 disk-index sector layout**：把 (vector, neighbors) co-locate
    到同一个 record，每跳 1 次 get 替代 1+N 次
 
+## Iteration 2：加入 disk-index 做 4-way 对比
+
+`disk-index` feature 提供 DiskANN 原版的磁盘驻留索引——PQ 压缩向量留在
+RAM 做候选筛选 + 完整向量按需从磁盘读取（per-hop sector read）。本节
+把它放入对比看架构层差异。
+
+### Build
+
+| Backend | 总时长 | 构造模式 |
+|---|---:|---|
+| **disk-index** | **5.35 s** | One-shot：load → in-RAM build → atomic write |
+| inmem | 1.92 s | Per-insert，无 KV 序列化 |
+| bftree | 9.60 s | Per-insert，每次 KV write |
+| rocksdb | 35.81 s | Per-insert，每次 KV write + WAL append |
+
+disk-index 比 bftree/rocksdb **更快** 的原因 [inference]：
+- 整体走 build-then-flush 模型，没有 per-insert 的 KV 写放大
+- 单次大块 sequential disk write 比 25K 次随机 KV write 高效
+
+### Search
+
+| Ls | inmem | bftree | rocksdb | disk-index |
+|---:|---:|---:|---:|---:|
+| 20 (QPS) | 25,645 | 4,066 | 1,350 | **72.5** |
+| 20 (avg lat) | 38 µs | 245 µs | 738 µs | **13,786 µs** |
+| 20 (recall@10) | 0.991 | 0.991 | 0.991 | **0.992** |
+| 50 (QPS) | 13,059 | 1,917 | 728 | 75.7 |
+| 100 (QPS) | 8,280 | 1,336 | 449 | 44.9 |
+| 100 (avg lat) | 119 µs | 747 µs | 2,225 µs | **22,266 µs** |
+| 100 (recall@10) | 1.000 | 1.000 | 1.000 | 1.000 |
+
+### disk-index 的 latency 细分（来自 benchmark 自带 stats）
+
+| Ls | IO time | CPU time | PQ preprocess | IOs/query | Cache hit% |
+|---:|---:|---:|---:|---:|---:|
+| 20 | 13,377 µs | 261 µs | 148 µs | 37.6 | 0.0% |
+| 50 | 12,717 µs | 343 µs | 145 µs | 66.0 | 0.0% |
+| 100 | 21,612 µs | 508 µs | 147 µs | 115.0 | 0.0% |
+
+**IO 占总 latency 96-97%**，CPU 仅 1-2%，PQ preprocess ~150 µs。
+**Cache hit 0%**：未设 `num_nodes_to_cache`，每跳都 cold disk read。
+
+### 架构差异（不是 perf bug，是定位不同）
+
+| Backend | 设计意图 | 数据驻留 | 主要开销 | 适用规模 |
+|---|---|---|---|---|
+| inmem | 一切在内存，最高 QPS | RAM | memory access | < dataset fits in RAM |
+| bftree | KV 抽象+持久化 | memtable + disk | per-op FFI-free overhead | dataset > RAM but want low latency |
+| rocksdb | LSM KV，生态成熟 | memtable + disk | FFI + LSM read path | 需 RocksDB 生态 (snapshot/replication/...) |
+| **disk-index** | **真正 disk-resident**，PQ + sector co-locate | disk + PQ cache in RAM | **per-hop disk IO** | **dataset >> RAM** |
+
+### 对 25K 数据集的关键注意
+
+disk-index 在 25K 上"看起来很慢" 是**架构错配**：
+- siftsmall (25K × 128 × 4 = 12 MiB) 本来就放得下 RAM
+- 用磁盘 layout 反而是 anti-pattern
+- 在 prod 1B+ 数据集上 disk-index 才发挥设计优势：那时 inmem 装不下，bftree/rocksdb 的 memtable 也装不下，per-query 必须 disk read
+
+**这次 sift10k benchmark 是 in-memory 三家的对比；disk-index 数字只作
+"另一类架构"展示，不应直接横比**。
+
+### 可能的 disk-index 调优 [inference, 未跑]
+
+| 优化 | 预期 ROI |
+|---|---|
+| 设 `num_nodes_to_cache = 25000` (缓存所有节点) | 高，但变成 in-memory 路径 |
+| `beam_width = 16` (默认 4) | 中，提高 IO 并行度 |
+| `search_io_limit` | 用于权衡 latency vs IO 数 |
+| 数据集放在 RAM disk / tmpfs | 极高，但变 anti-test |
+
 ## 配置文件
 
-- `sift10k-3way.json`（worktree 根）：本次实验输入
-- `sift10k-3way-output.json`：基线 raw 输出
-- `sift10k-3way-tuned.json`：调优后 raw 输出
+- `sift10k-3way.json`：3-way 配置（inmem / bftree / rocksdb）
+- `sift10k-4way.json`：4-way 配置（加 disk-index）
+- `sift10k-3way-output.json`：基线 raw 输出（3-way）
+- `sift10k-3way-tuned.json`：调优后 raw 输出（3-way）
+- `sift10k-4way-output.json`：4-way raw 输出
 - 数据：`test_data/sift/siftsmall_learn.bin` (25K base) +
   `test_data/sift/siftsmall_query_100pts.bin` (Python 生成的 100-query
   子集) + `test_data/sift/siftsmall_gt100`
@@ -262,10 +348,10 @@ graph diameter 增加 → 每 query 需要更多 neighbor lookups → KV 后端 
 ## 复现脚本
 
 ```bash
-# 1. Build with both feature flags
+# 1. Build with all backends (omit `disk-index` for 3-way only)
 $env:LIBCLANG_PATH = "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\Llvm\x64\bin"
 cargo build --release -p diskann-benchmark \
-    --features "bf_tree_provider rocksdb_provider"
+    --features "bf_tree_provider rocksdb_provider disk-index"
 
 # 2. Generate query subset (100 vectors from siftsmall_learn.bin)
 /c/Python314/python -c "
@@ -285,8 +371,8 @@ target/release/compute_groundtruth.exe \
     --gt_file test_data/sift/siftsmall_gt100 \
     --recall_at 10 --dist_fn l2 --data_type float
 
-# 4. Run benchmark
+# 4. Run benchmark (use sift10k-4way.json for the 4-way comparison)
 ./target/release/diskann-benchmark.exe --quiet run \
-    --input-file ./sift10k-3way.json \
+    --input-file ./sift10k-4way.json \
     --output-file ./output.json
 ```
