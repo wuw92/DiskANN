@@ -46,6 +46,8 @@ pub(crate) enum GraphProviderKind {
     BfTree,
     #[serde(rename = "rocksdb")]
     Rocksdb,
+    #[serde(rename = "redb")]
+    Redb,
 }
 
 impl std::fmt::Display for GraphProviderKind {
@@ -54,6 +56,7 @@ impl std::fmt::Display for GraphProviderKind {
             Self::InMemory => write!(f, "inmem"),
             Self::BfTree => write!(f, "bftree"),
             Self::Rocksdb => write!(f, "rocksdb"),
+            Self::Redb => write!(f, "redb"),
         }
     }
 }
@@ -709,6 +712,31 @@ impl IndexBuild {
             Config, RocksdbProviderParameters,
         };
         RocksdbProviderParameters {
+            max_points: num_points,
+            num_start_points: NonZero::new(self.start_point_strategy.count()).unwrap(),
+            dim,
+            metric: self.distance.into(),
+            max_fp_vecs_per_fill: None,
+            max_degree: self.exact_max_degree() as u32,
+            vector_provider_config: Config::default(),
+            quant_vector_provider_config: Config::default(),
+            neighbor_list_provider_config: Config::default(),
+            graph_params: None,
+        }
+    }
+
+    /// Build a `RedbProviderParameters` with default in-memory redb configs
+    /// (one tempdir per inner DB).
+    #[cfg(feature = "redb_provider")]
+    pub(crate) fn redb_parameters(
+        &self,
+        num_points: usize,
+        dim: usize,
+    ) -> diskann_providers::model::graph::provider::async_::redb::RedbProviderParameters {
+        use diskann_providers::model::graph::provider::async_::redb::{
+            Config, RedbProviderParameters,
+        };
+        RedbProviderParameters {
             max_points: num_points,
             num_start_points: NonZero::new(self.start_point_strategy.count()).unwrap(),
             dim,

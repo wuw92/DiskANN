@@ -85,3 +85,6 @@ rocksdb_provider = [
     "diskann-label-filter/rocksdb",
     "dep:tempfile",
 ]
+
+# Enable RedbProvider (pure-Rust B+ tree KV) as a graph storage backend.
+redb_provider = ["diskann-providers/redb_provider"]

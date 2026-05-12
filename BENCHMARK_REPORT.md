@@ -1,20 +1,31 @@
-# DiskANN Storage Backend Benchmark: inmem / BfTree / RocksDB / disk-index
+# DiskANN Storage Backend Benchmark: inmem / BfTree / RocksDB / **redb** / disk-index
 
 ## 摘要
 
-首次量化 DiskANN 四个存储后端在同一 workload 下的相对开销
-（siftsmall, 25K base × 100 query × 128 dim, single thread）：
+5 个存储后端在同一 workload 下的对比（siftsmall, 25K base × 100 query
+× 128 dim, single thread）。新加的 **redb 是纯 Rust B+ tree KV**，
+原以为应该跑赢 RocksDB（无 FFI），实测**反而是 build 最慢的**——
+4× 慢于 RocksDB，140× 慢于 inmem。
 
-| 维度 | inmem | BfTree | RocksDB (调优后) | disk-index |
-|---|---:|---:|---:|---:|
-| Build 时间 | **1.92 s** | 9.60 s | 34.15 s | **5.35 s** |
-| Search QPS @ Ls=100 | **8,280** | 1,336 | 449 | 44.9 |
-| Search Avg Latency @ Ls=100 | **119 µs** | 747 µs | 2225 µs | 22,266 µs |
-| Recall@10 | 0.991–1.0 | 0.991–1.0 | 0.991–1.0 | 0.992–1.0 |
-| Avg cmps (Ls=100) | 1554.59 | 1554.59 | 1554.59 | 1791.0 |
-| Avg hops (Ls=100) | 103.38 | 103.38 | 103.38 | 115.0 |
+| 维度 | inmem | BfTree | RocksDB (调优后) | **redb** | disk-index |
+|---|---:|---:|---:|---:|---:|
+| Build 时间 | **1.79 s** | 8.50 s | 28.93 s | **118.44 s** | 3.85 s |
+| Search QPS @ Ls=100 | **8,209** | 1,458 | 527 | **353** | 82.0 |
+| Search Avg Latency @ Ls=100 | **121 µs** | 685 µs | 1,902 µs | **2,832 µs** | 12,194 µs |
+| Recall@10 (Ls=100) | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| Avg cmps / hops (Ls=100) | 1554.59 / 103.38 | 同 | 同 | 同 | 1791.0 / 115.0 |
 
-**两个关键发现：**
+**关键发现：**
+
+0. **「Pure Rust ≠ Fast」反直觉数据点**：redb 是纯 Rust B+ tree KV，
+   没有 FFI 跨语言成本，但 build 比 RocksDB 慢 4×、比 BfTree 慢 14×。
+   原因不在语言层，而在数据结构 + 事务模型层：
+   - redb 是 **strict ACID B+ tree**，每次 `put` 都是完整 transaction
+     (`begin_write` → `open_table` → `insert` → `commit`)
+   - 即便 `Durability::None` 关掉 fsync，每次 commit 仍需要
+     WAL append + 树页更新 + root pointer swap
+   - 单写者串行（vs RocksDB 内部更细的锁 / BfTree 内部 buffer 合并）
+   - 25K 次小事务的累加成本主导
 
 1. **三个 in-memory backend（inmem/bftree/rocksdb）算法层完全一致**：
    同样的 cmps、hops、recall。Backend 只贡献每次 vector/neighbor
@@ -262,6 +273,107 @@ graph diameter 增加 → 每 query 需要更多 neighbor lookups → KV 后端 
    per-insert 顺序 put
 8. **借鉴 disk-index sector layout**：把 (vector, neighbors) co-locate
    到同一个 record，每跳 1 次 get 替代 1+N 次
+
+## Iteration 3：加入 redb (pure Rust B+ tree)
+
+### 动机
+
+`bf-tree` 是 Bε-tree（buffered repository tree, Microsoft Research）；
+`RocksDB` 是 C++ LSM via FFI；我想加一个**纯 Rust B+ tree KV** 形成
+3 类不同设计的对比：
+
+| Backend | 数据结构 | 实现语言 | 主要 trade-off |
+|---|---|---|---|
+| BfTree | Bε-tree | 纯 Rust | write-optimized, buffered |
+| RocksDB | LSM-tree | C++ + FFI | mature, write-heavy |
+| **redb** | **B+ tree** | **纯 Rust** | **strict ACID, single-file** |
+
+选 redb 是因为：
+- 纯 Rust，无 FFI
+- B+ tree（vs Bε-tree 和 LSM 都是不同结构）
+- production-tested（被 PufferFS、kanidm 等项目使用）
+- MVCC + 写事务隔离
+
+### Build 对比
+
+| Backend | 总时长 | Avg insert | 模式 |
+|---|---:|---:|---|
+| inmem | 1.79 s | 71 µs | per-insert，无 KV |
+| disk-index | 3.85 s | (one-shot) | in-RAM build → atomic write |
+| bftree | 8.50 s | 339 µs | per-insert KV (Bε-tree buffered) |
+| rocksdb | 28.93 s | 1,156 µs | per-insert KV (LSM + WAL) |
+| **redb** | **118.44 s** | **4,736 µs** | **per-insert tx (B+ tree)** |
+
+**redb 比 rocksdb 慢 4×、比 bftree 慢 14×** — 完全反直觉的方向。
+
+### Search 对比 (Ls=100)
+
+| Backend | QPS | Avg lat | p99 lat |
+|---|---:|---:|---:|
+| inmem | 8,209 | 121 µs | 196 µs |
+| bftree | 1,458 | 685 µs | 1,078 µs |
+| rocksdb | 527 | 1,902 µs | 3,156 µs |
+| **redb** | **353** | **2,832 µs** | **4,017 µs** |
+| disk-index | 82.0 | 12,194 µs | — |
+
+redb 在 search 上比 rocksdb 慢 1.5×，差距比 build 上小很多。
+
+### 为什么 redb 这么慢？[inference]
+
+每次 `put` 我们调用：
+```rust
+let mut tx = db.begin_write()?;
+tx.set_durability(redb::Durability::None);  // 关掉 fsync
+let mut table = tx.open_table(KV_TABLE)?;
+table.insert(key, value)?;
+tx.commit()?;
+```
+
+即便没有 fsync，每次 commit 仍有：
+1. **写者串行化**：redb 是 single-writer 设计，`begin_write` 拿独占锁
+2. **WAL append**：commit 写 commit record（无 fsync 但有 syscall）
+3. **B+ tree 页面拷贝**：copy-on-write，每次插入分配新页面
+4. **Root pointer atomic swap**：commit 时切换 root，需要内存屏障
+5. **Page allocator overhead**：B+ tree 的 page-aligned allocation
+
+vs **BfTree** 的优势：
+- Bε-tree 把多个 insert **buffered 到上层 node** 再批量下沉
+- 无 transaction commit 开销（不强 ACID）
+- 单 insert 主要是 in-memory buffer append
+
+vs **RocksDB** 的优势：
+- LSM 是 append-only，写就是 memtable insert
+- 即便有 WAL，writes 是 batched
+- 通过 column family / multi-threaded compaction 摊薄成本
+
+**redb 的设计点是 "transactional B+ tree, MVCC"——这对 OLTP / 配置
+存储友好，但**完全不适配** DiskANN 的 25K 高频小 write 模式**。
+
+### 为什么 search 也慢？
+
+每次 `get` 需要：
+```rust
+let tx = db.begin_read()?;
+let table = tx.open_table(KV_TABLE)?;
+let guard = table.get(key)?;
+```
+
+读路径开销：
+- `begin_read`：拿 snapshot version（轻量但非零）
+- `open_table`：表查找（按名字字符串比较）
+- B+ tree traversal 到叶子
+
+vs **BfTree** 的 `tree.read(key, buf)`：直接 internal map lookup，
+不需要 snapshot / table-open ceremony。
+
+### 结论：**redb 不是 DiskANN 的合适后端 [verified]**
+
+- redb 设计目标：transactional metadata storage（数百-数千 ops/s 的
+  OLTP-style workload）
+- DiskANN 需要：µs 级随机点查 × millions/sec，不需要 ACID
+
+**这是个有价值的"反例"**：纯 Rust 不一定快——数据结构选型 +
+事务模型比语言层影响大得多。
 
 ## Iteration 2：加入 disk-index 做 4-way 对比
 

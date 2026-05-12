@@ -17,6 +17,7 @@ mod spherical;
 
 // KV-backed graph storage backends (parallel to inmem).
 mod bf_tree;
+mod redb;
 mod rocksdb;
 
 pub(crate) fn register_benchmarks(benchmarks: &mut diskann_benchmark_runner::registry::Benchmarks) {
